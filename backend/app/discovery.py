@@ -4,13 +4,54 @@ import hashlib
 import os
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
 from .models import LivestreamResult
 from .service import DiscoveryUnavailable
 
 
-REPLAY_MARKERS = ("replay", "recorded", "recording", "premiere", "ended")
+LOGIN_MARKERS = (
+    "log in",
+    "login",
+    "must log in",
+    "sign up",
+    "create an account",
+    "log in to facebook",
+    "you must log in",
+)
+
+REPLAY_MARKERS = (
+    "replay",
+    "recorded",
+    "recording",
+    "premiere",
+    "ended",
+    "was live",
+    "completed",
+    "broadcast completed",
+    "stream ended",
+    "no longer live",
+    "video ended",
+    "live ended",
+)
+
+TRACKING_PARAMS = {
+    "ref",
+    "tracking",
+    "fbclid",
+    "__tn__",
+    "__cft__",
+    "fref",
+    "ti",
+    "hc_ref",
+    "comment_id",
+    "notif_id",
+    "notif_t",
+    "paipv",
+    "extid",
+    "sfnsn",
+}
+
 LIVE_MARKER = re.compile(r"\blive\b", re.IGNORECASE)
 FACEBOOK_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com"}
 
@@ -48,17 +89,32 @@ class FacebookBrowserDiscovery:
                 candidates = await self._extract_candidates(page)
 
                 results: list[LivestreamResult] = []
+                verified_count = 0
+                verification_errors = 0
+
                 for candidate in candidates[: self.max_candidates]:
-                    verified = await self._verify_candidate(context, candidate)
-                    if verified is not None:
-                        results.append(verified)
+                    try:
+                        verified = await self._verify_candidate(context, candidate)
+                        verified_count += 1
+                        if verified is not None:
+                            results.append(verified)
+                    except Exception:
+                        verification_errors += 1
 
                 await browser.close()
+
+                if candidates and verified_count == 0:
+                    raise DiscoveryUnavailable(
+                        "Facebook discovery is temporarily unavailable. Candidate verification failed."
+                    )
+
                 return results
         except PlaywrightTimeoutError as error:
             raise DiscoveryUnavailable(
                 "Facebook did not respond before the search timed out. Try again."
             ) from error
+        except DiscoveryUnavailable:
+            raise
         except Exception as error:
             raise DiscoveryUnavailable(
                 "Facebook discovery is temporarily unavailable. Check the browser "
@@ -77,16 +133,17 @@ class FacebookBrowserDiscovery:
         candidates: list[dict[str, str]] = []
         seen: set[str] = set()
         for link in links:
-            url = str(link.get("href", "")).split("#", 1)[0]
-            parsed = urlparse(url)
+            raw_url = str(link.get("href", "")).split("#", 1)[0]
+            parsed = urlparse(raw_url)
             if parsed.netloc not in FACEBOOK_HOSTS:
                 continue
             if not any(segment in parsed.path for segment in ("/watch", "/videos", "/live")):
                 continue
-            if url in seen:
+            canonical_url = self._canonical_url(raw_url)
+            if canonical_url in seen:
                 continue
-            seen.add(url)
-            candidates.append({"url": url, "text": str(link.get("text", "")).strip()})
+            seen.add(canonical_url)
+            candidates.append({"url": canonical_url, "text": str(link.get("text", "")).strip()})
         return candidates
 
     async def _verify_candidate(
@@ -100,11 +157,12 @@ class FacebookBrowserDiscovery:
             if not self._is_live(body):
                 return None
             verified_at = datetime.now(timezone.utc)
+            canonical_url = self._canonical_url(candidate["url"])
             return LivestreamResult(
-                id=self._stable_id(candidate["url"]),
+                id=self._stable_id(canonical_url),
                 title=candidate["text"] or "Live broadcast",
                 source_name="Facebook public page",
-                url=candidate["url"],
+                url=canonical_url,
                 verified_at=verified_at,
                 is_live=True,
                 is_replay=False,
@@ -115,10 +173,37 @@ class FacebookBrowserDiscovery:
     @staticmethod
     def _is_live(text: str) -> bool:
         normalized = text.lower()
+        if any(marker in normalized for marker in LOGIN_MARKERS):
+            return False
         if any(marker in normalized for marker in REPLAY_MARKERS):
             return False
         return bool(LIVE_MARKER.search(text))
 
-    @staticmethod
-    def _stable_id(url: str) -> str:
-        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    @classmethod
+    def _canonical_url(cls, url: str) -> str:
+        parsed = urlparse(url)
+        netloc = "www.facebook.com" if parsed.netloc in FACEBOOK_HOSTS else parsed.netloc
+
+        if parsed.query:
+            query_pairs = parse_qs(parsed.query, keep_blank_values=True)
+            filtered_pairs = [
+                (k, v)
+                for k, vlist in query_pairs.items()
+                if k not in TRACKING_PARAMS
+                for v in vlist
+            ]
+            filtered_pairs.sort(key=lambda x: (x[0], x[1]))
+            new_query = urlencode(filtered_pairs)
+        else:
+            new_query = ""
+
+        path = parsed.path
+        if not path:
+            path = "/"
+
+        return urlunparse((parsed.scheme or "https", netloc, path, parsed.params, new_query, ""))
+
+    @classmethod
+    def _stable_id(cls, url: str) -> str:
+        canonical = cls._canonical_url(url)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
