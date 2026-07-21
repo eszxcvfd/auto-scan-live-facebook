@@ -1,0 +1,5 @@
+interface:
+  display_name: "Orchestrator (Herdr)"
+  short_description: "Coordinate Herdr agents with DAG plans, skill contracts, status ingest, and quality gates"
+policy:
+  allow_implicit_invocation: false
