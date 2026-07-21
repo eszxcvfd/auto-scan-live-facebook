@@ -295,3 +295,48 @@ async def test_discovery_produces_stable_ids_for_url_tracking_variations(monkeyp
 
     assert len(deduped_results) == 1
     assert deduped_results[0].id == raw_results[0].id
+@pytest.mark.anyio
+async def test_discovery_returns_live_broadcast_when_page_has_incidental_login_footer(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_links = [
+        {"href": "https://www.facebook.com/watch/?v=501", "text": "Public Stream"},
+    ]
+    candidate_responses = [
+        {"body_text": "See more on Facebook. Log In or Create New Account. Gaming stream is live now."},
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_links, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("gaming")
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.facebook.com/watch/?v=501"
+
+
+@pytest.mark.anyio
+async def test_discovery_raises_unavailable_when_candidate_fails_and_remaining_are_non_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+    from backend.app.service import DiscoveryUnavailable
+
+    search_links = [
+        {"href": "https://www.facebook.com/watch/?v=601", "text": "Failing Stream"},
+        {"href": "https://www.facebook.com/watch/?v=602", "text": "Ended Stream"},
+    ]
+    candidate_responses = [
+        {"exception": RuntimeError("Navigation timeout")},
+        {"body_text": "Stream ended 1 hour ago"},
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_links, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    with pytest.raises(DiscoveryUnavailable):
+        await discovery.search("gaming")

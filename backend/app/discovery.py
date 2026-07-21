@@ -4,20 +4,25 @@ import hashlib
 import os
 import re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
 from .models import LivestreamResult
 from .service import DiscoveryUnavailable
 
+if TYPE_CHECKING:
+    from playwright.async_api import BrowserContext, Page
 
-LOGIN_MARKERS = (
-    "log in",
-    "login",
+
+LOGIN_WALL_MARKERS = (
     "must log in",
-    "sign up",
-    "create an account",
-    "log in to facebook",
     "you must log in",
+    "log in to view",
+    "login to view",
+    "log in to see",
+    "login to see",
+    "log in to continue",
+    "login to continue",
 )
 
 REPLAY_MARKERS = (
@@ -89,13 +94,11 @@ class FacebookBrowserDiscovery:
                 candidates = await self._extract_candidates(page)
 
                 results: list[LivestreamResult] = []
-                verified_count = 0
                 verification_errors = 0
 
                 for candidate in candidates[: self.max_candidates]:
                     try:
                         verified = await self._verify_candidate(context, candidate)
-                        verified_count += 1
                         if verified is not None:
                             results.append(verified)
                     except Exception:
@@ -103,7 +106,7 @@ class FacebookBrowserDiscovery:
 
                 await browser.close()
 
-                if candidates and verified_count == 0:
+                if not results and verification_errors > 0:
                     raise DiscoveryUnavailable(
                         "Facebook discovery is temporarily unavailable. Candidate verification failed."
                     )
@@ -121,7 +124,7 @@ class FacebookBrowserDiscovery:
                 "installation and try again."
             ) from error
 
-    async def _extract_candidates(self, page: object) -> list[dict[str, str]]:
+    async def _extract_candidates(self, page: Page) -> list[dict[str, str]]:
         links = await page.locator("a[href]").evaluate_all(
             """
             anchors => anchors.map(anchor => ({
@@ -147,7 +150,7 @@ class FacebookBrowserDiscovery:
         return candidates
 
     async def _verify_candidate(
-        self, context: object, candidate: dict[str, str]
+        self, context: BrowserContext, candidate: dict[str, str]
     ) -> LivestreamResult | None:
         page = await context.new_page()
         try:
@@ -157,12 +160,12 @@ class FacebookBrowserDiscovery:
             if not self._is_live(body):
                 return None
             verified_at = datetime.now(timezone.utc)
-            canonical_url = self._canonical_url(candidate["url"])
+            url = candidate["url"]
             return LivestreamResult(
-                id=self._stable_id(canonical_url),
+                id=self._stable_id(url),
                 title=candidate["text"] or "Live broadcast",
                 source_name="Facebook public page",
-                url=canonical_url,
+                url=url,
                 verified_at=verified_at,
                 is_live=True,
                 is_replay=False,
@@ -173,14 +176,14 @@ class FacebookBrowserDiscovery:
     @staticmethod
     def _is_live(text: str) -> bool:
         normalized = text.lower()
-        if any(marker in normalized for marker in LOGIN_MARKERS):
+        if any(marker in normalized for marker in LOGIN_WALL_MARKERS):
             return False
         if any(marker in normalized for marker in REPLAY_MARKERS):
             return False
         return bool(LIVE_MARKER.search(text))
 
-    @classmethod
-    def _canonical_url(cls, url: str) -> str:
+    @staticmethod
+    def _canonical_url(url: str) -> str:
         parsed = urlparse(url)
         netloc = "www.facebook.com" if parsed.netloc in FACEBOOK_HOSTS else parsed.netloc
 
@@ -203,7 +206,7 @@ class FacebookBrowserDiscovery:
 
         return urlunparse((parsed.scheme or "https", netloc, path, parsed.params, new_query, ""))
 
-    @classmethod
-    def _stable_id(cls, url: str) -> str:
-        canonical = cls._canonical_url(url)
+    @staticmethod
+    def _stable_id(url: str) -> str:
+        canonical = FacebookBrowserDiscovery._canonical_url(url)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
