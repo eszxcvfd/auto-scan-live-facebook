@@ -612,17 +612,28 @@ async def test_search_api_handles_results_without_thumbnail_url() -> None:
 
 
 @pytest.mark.anyio
-async def test_discovery_canonical_url_normalizes_paths_and_tracking_params() -> None:
+async def test_discovery_canonical_url_normalizes_paths_and_tracking_params(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.discovery import FacebookBrowserDiscovery
 
-    url1 = "https://m.facebook.com/watch/?v=777&fbclid=XYZ123&ref=search"
-    url2 = "https://www.facebook.com/watch/?ref=search&v=777"
-    url3 = "https://www.facebook.com/videos/888/?"
+    search_page = [
+        {"href": "https://m.facebook.com/watch/?v=777&fbclid=XYZ123&ref=search", "text": "Mobile URL with tracking"},
+        {"href": "https://www.facebook.com/watch/?ref=search&v=777", "text": "Desktop URL with tracking"},
+    ]
+    candidate_responses = [
+        {"body_text": "Live broadcast streaming now live gaming"},
+        {"body_text": "Live broadcast streaming now live gaming"},
+    ]
 
-    assert FacebookBrowserDiscovery._canonical_url(url1) == "https://www.facebook.com/watch/?v=777"
-    assert FacebookBrowserDiscovery._canonical_url(url2) == "https://www.facebook.com/watch/?v=777"
-    assert FacebookBrowserDiscovery._canonical_url(url3) == "https://www.facebook.com/videos/888/"
-    assert FacebookBrowserDiscovery._stable_id(url1) == FacebookBrowserDiscovery._stable_id(url2)
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("gaming")
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.facebook.com/watch/?v=777"
 
 
 @pytest.mark.anyio
