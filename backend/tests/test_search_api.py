@@ -120,11 +120,17 @@ class MockLocator:
         self,
         links: list[dict[str, str]] | None = None,
         text: str = "",
+        meta_attrs: dict[str, str] | None = None,
         exception: Exception | None = None,
     ) -> None:
         self._links = links or []
         self._text = text
+        self._meta_attrs = meta_attrs or {}
         self._exception = exception
+
+    @property
+    def first(self) -> MockLocator:
+        return self
 
     async def evaluate_all(self, expression: str) -> list[dict[str, str]]:
         if self._exception:
@@ -136,6 +142,11 @@ class MockLocator:
             raise self._exception
         return self._text
 
+    async def get_attribute(self, name: str, timeout: int | None = None) -> str | None:
+        if self._exception:
+            raise self._exception
+        return self._meta_attrs.get(name)
+
 
 class MockPage:
     def __init__(
@@ -143,12 +154,14 @@ class MockPage:
         url: str = "",
         links: list[dict[str, str]] | None = None,
         body_text: str = "",
+        meta_attrs: dict[str, dict[str, str]] | None = None,
         goto_exception: Exception | None = None,
         locator_exception: Exception | None = None,
     ) -> None:
         self.url = url
         self._links = links or []
         self._body_text = body_text
+        self._meta_attrs = meta_attrs or {}
         self._goto_exception = goto_exception
         self._locator_exception = locator_exception
 
@@ -165,11 +178,16 @@ class MockPage:
             return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
             return MockLocator(text=self._body_text, exception=self._locator_exception)
+        elif "og:image" in selector or "twitter:image" in selector:
+            attrs = self._meta_attrs.get("og:image") or self._meta_attrs.get("twitter:image")
+            return MockLocator(meta_attrs=attrs, exception=self._locator_exception)
+        elif "og:site_name" in selector:
+            attrs = self._meta_attrs.get("og:site_name")
+            return MockLocator(meta_attrs=attrs, exception=self._locator_exception)
         return MockLocator(exception=self._locator_exception)
 
     async def close(self) -> None:
         pass
-
 
 class MockContext:
     def __init__(
@@ -201,9 +219,11 @@ class MockContext:
 
         page_idx = len(self._created_pages) - 1
         resp = self._candidate_responses[page_idx] if page_idx < len(self._candidate_responses) else {}
+        meta_attrs = resp.get("meta_attrs")
 
         page = MockPage(
             body_text=str(resp.get("body_text", "")),
+            meta_attrs=meta_attrs if isinstance(meta_attrs, dict) else None,
             goto_exception=resp.get("exception") if isinstance(resp.get("exception"), Exception) else None,
             locator_exception=resp.get("locator_exception") if isinstance(resp.get("locator_exception"), Exception) else None,
         )
@@ -508,3 +528,148 @@ async def test_search_api_returns_503_on_search_page_locator_failure(monkeypatch
 
     assert response.status_code == 503
     assert "content is unavailable" in response.json()["detail"].lower() or "unavailable" in response.json()["detail"].lower()
+
+
+class MetadataFakeDiscovery:
+    async def search(self, query: str) -> list[LivestreamResult]:
+        verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        started_at = datetime(2026, 7, 21, 11, 30, 0, tzinfo=timezone.utc)
+        return [
+            LivestreamResult(
+                id="live-101",
+                title="Official Gaming Championship",
+                source_name="Esports Channel",
+                url="https://www.facebook.com/watch/?v=1000101",
+                thumbnail_url="https://www.facebook.com/images/thumb101.jpg",
+                started_at=started_at,
+                verified_at=verified_at,
+                is_live=True,
+                is_replay=False,
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_search_api_returns_complete_result_metadata_and_facebook_handoff_url() -> None:
+    app = create_app(MetadataFakeDiscovery())
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "championship"})
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["query"] == "championship"
+    assert "verified_at" in data
+    assert len(data["results"]) == 1
+
+    result = data["results"][0]
+    assert result["id"] == "live-101"
+    assert result["title"] == "Official Gaming Championship"
+    assert result["source_name"] == "Esports Channel"
+    assert result["url"] == "https://www.facebook.com/watch/?v=1000101"
+    assert result["url"].startswith("https://www.facebook.com/")
+    assert result["thumbnail_url"] == "https://www.facebook.com/images/thumb101.jpg"
+    assert "2026-07-21" in result["started_at"]
+    assert "2026-07-21" in result["verified_at"]
+    assert result["is_live"] is True
+    assert result["is_replay"] is False
+
+
+class NoThumbnailFakeDiscovery:
+    async def search(self, query: str) -> list[LivestreamResult]:
+        verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        return [
+            LivestreamResult(
+                id="live-102",
+                title="Community Stream",
+                source_name="Community Page",
+                url="https://www.facebook.com/watch/?v=1000102",
+                thumbnail_url=None,
+                started_at=None,
+                verified_at=verified_at,
+                is_live=True,
+                is_replay=False,
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_search_api_handles_results_without_thumbnail_url() -> None:
+    app = create_app(NoThumbnailFakeDiscovery())
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "community"})
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["id"] == "live-102"
+    assert result["thumbnail_url"] is None
+
+
+@pytest.mark.anyio
+async def test_discovery_canonical_url_normalizes_paths_and_tracking_params() -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    url1 = "https://m.facebook.com/watch/?v=777&fbclid=XYZ123&ref=search"
+    url2 = "https://www.facebook.com/watch/?ref=search&v=777"
+    url3 = "https://www.facebook.com/videos/888/?"
+
+    assert FacebookBrowserDiscovery._canonical_url(url1) == "https://www.facebook.com/watch/?v=777"
+    assert FacebookBrowserDiscovery._canonical_url(url2) == "https://www.facebook.com/watch/?v=777"
+    assert FacebookBrowserDiscovery._canonical_url(url3) == "https://www.facebook.com/videos/888/"
+    assert FacebookBrowserDiscovery._stable_id(url1) == FacebookBrowserDiscovery._stable_id(url2)
+
+
+@pytest.mark.anyio
+async def test_discovery_extracts_thumbnail_and_source_name_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [{"href": "https://www.facebook.com/watch/?v=901", "text": "Live Event"}]
+    candidate_responses = [
+        {
+            "body_text": "Live now streaming live event",
+            "meta_attrs": {
+                "og:image": {"content": "https://www.facebook.com/images/preview.jpg"},
+                "og:site_name": {"content": "Tech Channel"},
+            },
+        }
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("tech")
+    assert len(results) == 1
+    assert results[0].thumbnail_url == "https://www.facebook.com/images/preview.jpg"
+    assert results[0].source_name == "Tech Channel"
+
+
+@pytest.mark.anyio
+async def test_discovery_handles_missing_thumbnail_and_source_name_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [{"href": "https://www.facebook.com/watch/?v=902", "text": "Live Stream"}]
+    candidate_responses = [
+        {
+            "body_text": "Live now playing games",
+        }
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("games")
+    assert len(results) == 1
+    assert results[0].thumbnail_url is None
+    assert results[0].source_name == "Facebook public page"

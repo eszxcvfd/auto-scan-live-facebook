@@ -180,17 +180,38 @@ class FacebookBrowserDiscovery:
                 return None
             verified_at = datetime.now(timezone.utc)
             url = candidate["url"]
+            thumbnail_url = await self._extract_thumbnail_url(page)
+            source_name = await self._extract_source_name(page) or "Facebook public page"
             return LivestreamResult(
                 id=self._stable_id(url),
                 title=candidate["text"] or "Live broadcast",
-                source_name="Facebook public page",
+                source_name=source_name,
                 url=url,
+                thumbnail_url=thumbnail_url,
                 verified_at=verified_at,
                 is_live=True,
                 is_replay=False,
             )
         finally:
             await page.close()
+
+    async def _extract_thumbnail_url(self, page: Page) -> str | None:
+        try:
+            content = await page.locator('meta[property="og:image"], meta[name="twitter:image"]').first.get_attribute("content", timeout=2_000)
+            if content and content.strip().startswith(("http://", "https://")):
+                return content.strip()
+        except Exception:
+            pass
+        return None
+
+    async def _extract_source_name(self, page: Page) -> str | None:
+        try:
+            name = await page.locator('meta[property="og:site_name"]').first.get_attribute("content", timeout=2_000)
+            if name and name.strip():
+                return name.strip()
+        except Exception:
+            pass
+        return None
 
     async def _inspect_page_body(self, page: Page, *, is_candidate: bool = False) -> str:
         try:
@@ -243,10 +264,7 @@ class FacebookBrowserDiscovery:
         else:
             new_query = ""
 
-        path = parsed.path
-        if not path:
-            path = "/"
-
+        path = parsed.path or "/"
         return urlunparse((parsed.scheme or "https", netloc, path, parsed.params, new_query, ""))
 
     @staticmethod

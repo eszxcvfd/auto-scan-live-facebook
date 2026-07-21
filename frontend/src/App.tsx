@@ -31,14 +31,15 @@ function formatTime(value: string) {
 }
 
 function ResultRow({ result }: { result: LivestreamResult }) {
+  const hasThumbnail = Boolean(result.thumbnail_url && result.thumbnail_url.trim())
   return (
     <article className="result-row">
       <div
-        className={`result-art ${result.thumbnail_url ? 'has-image' : ''}`}
-        style={result.thumbnail_url ? { backgroundImage: `url(${result.thumbnail_url})` } : undefined}
+        className={`result-art ${hasThumbnail ? 'has-image' : ''}`}
+        style={hasThumbnail ? { backgroundImage: `url(${result.thumbnail_url})` } : undefined}
         aria-hidden="true"
       >
-        {!result.thumbnail_url && <Radio size={24} strokeWidth={1.5} />}
+        {!hasThumbnail && <Radio size={24} strokeWidth={1.5} />}
         <span className="result-art-live"><span /> LIVE</span>
       </div>
       <div className="result-copy">
