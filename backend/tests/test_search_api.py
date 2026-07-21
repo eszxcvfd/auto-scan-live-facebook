@@ -120,12 +120,14 @@ class MockLocator:
         self,
         links: list[dict[str, str]] | None = None,
         text: str = "",
-        meta_attrs: dict[str, str] | None = None,
+        meta_attrs: dict[str, dict[str, str]] | None = None,
+        selector: str = "",
         exception: Exception | None = None,
     ) -> None:
         self._links = links or []
         self._text = text
         self._meta_attrs = meta_attrs or {}
+        self._selector = selector
         self._exception = exception
 
     @property
@@ -145,7 +147,10 @@ class MockLocator:
     async def get_attribute(self, name: str, timeout: int | None = None) -> str | None:
         if self._exception:
             raise self._exception
-        return self._meta_attrs.get(name)
+        for key, attrs in self._meta_attrs.items():
+            if key in self._selector:
+                return attrs.get(name)
+        return None
 
 
 class MockPage:
@@ -178,17 +183,10 @@ class MockPage:
             return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
             return MockLocator(text=self._body_text, exception=self._locator_exception)
-        elif "og:image" in selector or "twitter:image" in selector:
-            attrs = self._meta_attrs.get("og:image") or self._meta_attrs.get("twitter:image")
-            return MockLocator(meta_attrs=attrs, exception=self._locator_exception)
-        elif "og:site_name" in selector:
-            attrs = self._meta_attrs.get("og:site_name")
-            return MockLocator(meta_attrs=attrs, exception=self._locator_exception)
-        return MockLocator(exception=self._locator_exception)
+        return MockLocator(meta_attrs=self._meta_attrs, selector=selector, exception=self._locator_exception)
 
     async def close(self) -> None:
         pass
-
 class MockContext:
     def __init__(
         self,
@@ -530,28 +528,32 @@ async def test_search_api_returns_503_on_search_page_locator_failure(monkeypatch
     assert "content is unavailable" in response.json()["detail"].lower() or "unavailable" in response.json()["detail"].lower()
 
 
-class MetadataFakeDiscovery:
+class ConfigurableFakeDiscovery:
+    def __init__(self, results: list[LivestreamResult]) -> None:
+        self._results = results
+
     async def search(self, query: str) -> list[LivestreamResult]:
-        verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
-        started_at = datetime(2026, 7, 21, 11, 30, 0, tzinfo=timezone.utc)
-        return [
-            LivestreamResult(
-                id="live-101",
-                title="Official Gaming Championship",
-                source_name="Esports Channel",
-                url="https://www.facebook.com/watch/?v=1000101",
-                thumbnail_url="https://www.facebook.com/images/thumb101.jpg",
-                started_at=started_at,
-                verified_at=verified_at,
-                is_live=True,
-                is_replay=False,
-            )
-        ]
+        return self._results
 
 
 @pytest.mark.anyio
 async def test_search_api_returns_complete_result_metadata_and_facebook_handoff_url() -> None:
-    app = create_app(MetadataFakeDiscovery())
+    verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+    started_at = datetime(2026, 7, 21, 11, 30, 0, tzinfo=timezone.utc)
+    results = [
+        LivestreamResult(
+            id="live-101",
+            title="Official Gaming Championship",
+            source_name="Esports Channel",
+            url="https://www.facebook.com/watch/?v=1000101",
+            thumbnail_url="https://www.facebook.com/images/thumb101.jpg",
+            started_at=started_at,
+            verified_at=verified_at,
+            is_live=True,
+            is_replay=False,
+        )
+    ]
+    app = create_app(ConfigurableFakeDiscovery(results))
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -578,27 +580,23 @@ async def test_search_api_returns_complete_result_metadata_and_facebook_handoff_
     assert result["is_replay"] is False
 
 
-class NoThumbnailFakeDiscovery:
-    async def search(self, query: str) -> list[LivestreamResult]:
-        verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
-        return [
-            LivestreamResult(
-                id="live-102",
-                title="Community Stream",
-                source_name="Community Page",
-                url="https://www.facebook.com/watch/?v=1000102",
-                thumbnail_url=None,
-                started_at=None,
-                verified_at=verified_at,
-                is_live=True,
-                is_replay=False,
-            )
-        ]
-
-
 @pytest.mark.anyio
 async def test_search_api_handles_results_without_thumbnail_url() -> None:
-    app = create_app(NoThumbnailFakeDiscovery())
+    verified_at = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+    results = [
+        LivestreamResult(
+            id="live-102",
+            title="Community Stream",
+            source_name="Community Page",
+            url="https://www.facebook.com/watch/?v=1000102",
+            thumbnail_url=None,
+            started_at=None,
+            verified_at=verified_at,
+            is_live=True,
+            is_replay=False,
+        )
+    ]
+    app = create_app(ConfigurableFakeDiscovery(results))
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -609,6 +607,31 @@ async def test_search_api_handles_results_without_thumbnail_url() -> None:
     result = response.json()["results"][0]
     assert result["id"] == "live-102"
     assert result["thumbnail_url"] is None
+
+
+@pytest.mark.anyio
+async def test_discovery_filters_generic_facebook_site_name_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [{"href": "https://www.facebook.com/watch/?v=905", "text": "Generic Site Name Stream"}]
+    candidate_responses = [
+        {
+            "body_text": "Live now streaming live event",
+            "meta_attrs": {
+                "og:site_name": {"content": "Facebook"},
+            },
+        }
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("generic")
+    assert len(results) == 1
+    assert results[0].source_name == "Facebook public page"
 
 
 @pytest.mark.anyio

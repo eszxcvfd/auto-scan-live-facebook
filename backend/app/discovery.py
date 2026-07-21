@@ -76,6 +76,7 @@ TRACKING_PARAMS = {
 
 LIVE_MARKER = re.compile(r"\blive\b", re.IGNORECASE)
 FACEBOOK_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com"}
+GENERIC_SOURCE_NAMES = {"facebook", "facebook.com", "www.facebook.com", "m.facebook.com"}
 
 
 class FacebookBrowserDiscovery:
@@ -194,23 +195,32 @@ class FacebookBrowserDiscovery:
             )
         finally:
             await page.close()
-
-    async def _extract_thumbnail_url(self, page: Page) -> str | None:
+    async def _get_meta_content(self, page: Page, selector: str) -> str | None:
         try:
-            content = await page.locator('meta[property="og:image"], meta[name="twitter:image"]').first.get_attribute("content", timeout=2_000)
-            if content and content.strip().startswith(("http://", "https://")):
+            content = await page.locator(selector).first.get_attribute("content", timeout=2_000)
+            if content and content.strip():
                 return content.strip()
         except Exception:
             pass
         return None
 
+    async def _extract_thumbnail_url(self, page: Page) -> str | None:
+        content = await self._get_meta_content(
+            page, 'meta[property="og:image"], meta[name="twitter:image"]'
+        )
+        if content and content.startswith(("http://", "https://")):
+            return content
+        return None
+
     async def _extract_source_name(self, page: Page) -> str | None:
-        try:
-            name = await page.locator('meta[property="og:site_name"]').first.get_attribute("content", timeout=2_000)
-            if name and name.strip():
-                return name.strip()
-        except Exception:
-            pass
+        for selector in (
+            'meta[name="author"]',
+            'meta[property="og:owner"]',
+            'meta[property="og:site_name"]',
+        ):
+            name = await self._get_meta_content(page, selector)
+            if name and name.lower() not in GENERIC_SOURCE_NAMES:
+                return name
         return None
 
     async def _inspect_page_body(self, page: Page, *, is_candidate: bool = False) -> str:
