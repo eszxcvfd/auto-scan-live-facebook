@@ -120,14 +120,12 @@ class MockLocator:
         self,
         links: list[dict[str, str]] | None = None,
         text: str = "",
-        meta_attrs: dict[str, dict[str, str]] | None = None,
-        selector: str = "",
+        content: str | None = None,
         exception: Exception | None = None,
     ) -> None:
         self._links = links or []
         self._text = text
-        self._meta_attrs = meta_attrs or {}
-        self._selector = selector
+        self._content = content
         self._exception = exception
 
     @property
@@ -147,9 +145,8 @@ class MockLocator:
     async def get_attribute(self, name: str, timeout: int | None = None) -> str | None:
         if self._exception:
             raise self._exception
-        for key, attrs in self._meta_attrs.items():
-            if key in self._selector:
-                return attrs.get(name)
+        if name == "content":
+            return self._content
         return None
 
 
@@ -159,14 +156,14 @@ class MockPage:
         url: str = "",
         links: list[dict[str, str]] | None = None,
         body_text: str = "",
-        meta_attrs: dict[str, dict[str, str]] | None = None,
+        meta_contents: list[str | None] | None = None,
         goto_exception: Exception | None = None,
         locator_exception: Exception | None = None,
     ) -> None:
         self.url = url
         self._links = links or []
         self._body_text = body_text
-        self._meta_attrs = meta_attrs or {}
+        self._meta_contents = list(meta_contents) if meta_contents is not None else []
         self._goto_exception = goto_exception
         self._locator_exception = locator_exception
 
@@ -183,10 +180,13 @@ class MockPage:
             return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
             return MockLocator(text=self._body_text, exception=self._locator_exception)
-        return MockLocator(meta_attrs=self._meta_attrs, selector=selector, exception=self._locator_exception)
+        content = self._meta_contents.pop(0) if self._meta_contents else None
+        return MockLocator(content=content, exception=self._locator_exception)
 
     async def close(self) -> None:
         pass
+
+
 class MockContext:
     def __init__(
         self,
@@ -217,11 +217,11 @@ class MockContext:
 
         page_idx = len(self._created_pages) - 1
         resp = self._candidate_responses[page_idx] if page_idx < len(self._candidate_responses) else {}
-        meta_attrs = resp.get("meta_attrs")
+        meta_contents = resp.get("meta_contents")
 
         page = MockPage(
             body_text=str(resp.get("body_text", "")),
-            meta_attrs=meta_attrs if isinstance(meta_attrs, dict) else None,
+            meta_contents=meta_contents if isinstance(meta_contents, list) else None,
             goto_exception=resp.get("exception") if isinstance(resp.get("exception"), Exception) else None,
             locator_exception=resp.get("locator_exception") if isinstance(resp.get("locator_exception"), Exception) else None,
         )
@@ -617,9 +617,10 @@ async def test_discovery_filters_generic_facebook_site_name_to_fallback(monkeypa
     candidate_responses = [
         {
             "body_text": "Live now streaming live event",
-            "meta_attrs": {
-                "og:site_name": {"content": "Facebook"},
-            },
+            "meta_contents": [
+                None,
+                "Facebook",
+            ],
         }
     ]
 
@@ -667,10 +668,10 @@ async def test_discovery_extracts_thumbnail_and_source_name_when_present(monkeyp
     candidate_responses = [
         {
             "body_text": "Live now streaming live event",
-            "meta_attrs": {
-                "og:image": {"content": "https://www.facebook.com/images/preview.jpg"},
-                "og:site_name": {"content": "Tech Channel"},
-            },
+            "meta_contents": [
+                "https://www.facebook.com/images/preview.jpg",
+                "Tech Channel",
+            ],
         }
     ]
 
