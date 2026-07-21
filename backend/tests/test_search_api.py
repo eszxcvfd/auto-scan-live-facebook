@@ -116,14 +116,24 @@ async def test_search_api_returns_503_when_discovery_unavailable() -> None:
 
 
 class MockLocator:
-    def __init__(self, links: list[dict[str, str]] | None = None, text: str = "") -> None:
+    def __init__(
+        self,
+        links: list[dict[str, str]] | None = None,
+        text: str = "",
+        exception: Exception | None = None,
+    ) -> None:
         self._links = links or []
         self._text = text
+        self._exception = exception
 
     async def evaluate_all(self, expression: str) -> list[dict[str, str]]:
+        if self._exception:
+            raise self._exception
         return self._links
 
     async def inner_text(self) -> str:
+        if self._exception:
+            raise self._exception
         return self._text
 
 
@@ -134,11 +144,13 @@ class MockPage:
         links: list[dict[str, str]] | None = None,
         body_text: str = "",
         goto_exception: Exception | None = None,
+        locator_exception: Exception | None = None,
     ) -> None:
         self.url = url
         self._links = links or []
         self._body_text = body_text
         self._goto_exception = goto_exception
+        self._locator_exception = locator_exception
 
     async def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None) -> None:
         if self._goto_exception:
@@ -150,10 +162,10 @@ class MockPage:
 
     def locator(self, selector: str) -> MockLocator:
         if selector == "a[href]":
-            return MockLocator(links=self._links)
+            return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
-            return MockLocator(text=self._body_text)
-        return MockLocator()
+            return MockLocator(text=self._body_text, exception=self._locator_exception)
+        return MockLocator(exception=self._locator_exception)
 
     async def close(self) -> None:
         pass
@@ -162,30 +174,38 @@ class MockPage:
 class MockContext:
     def __init__(
         self,
-        search_links: list[dict[str, str]],
-        candidate_responses: list[dict[str, object]],
-        search_body_text: str = "",
+        search_page: dict[str, object] | list[dict[str, str]],
+        candidate_responses: list[dict[str, object]] | None = None,
     ) -> None:
-        self._search_links = search_links
-        self._candidate_responses = candidate_responses
-        self._search_body_text = search_body_text
+        if isinstance(search_page, list):
+            self._search_page: dict[str, object] = {"links": search_page}
+        else:
+            self._search_page = search_page or {}
+        self._candidate_responses = candidate_responses or []
         self._created_pages: list[MockPage] = []
 
     async def new_page(self) -> MockPage:
         if not self._created_pages:
-            page = MockPage(links=self._search_links, body_text=self._search_body_text)
+            links = self._search_page.get("links")
+            body_text = str(self._search_page.get("body_text", ""))
+            goto_exc = self._search_page.get("exception")
+            loc_exc = self._search_page.get("locator_exception")
+            page = MockPage(
+                links=links if isinstance(links, list) else None,
+                body_text=body_text,
+                goto_exception=goto_exc if isinstance(goto_exc, Exception) else None,
+                locator_exception=loc_exc if isinstance(loc_exc, Exception) else None,
+            )
             self._created_pages.append(page)
             return page
 
         page_idx = len(self._created_pages) - 1
-        if page_idx < len(self._candidate_responses):
-            resp = self._candidate_responses[page_idx]
-        else:
-            resp = {}
+        resp = self._candidate_responses[page_idx] if page_idx < len(self._candidate_responses) else {}
 
         page = MockPage(
             body_text=str(resp.get("body_text", "")),
             goto_exception=resp.get("exception") if isinstance(resp.get("exception"), Exception) else None,
+            locator_exception=resp.get("locator_exception") if isinstance(resp.get("locator_exception"), Exception) else None,
         )
         self._created_pages.append(page)
         return page
@@ -194,16 +214,14 @@ class MockContext:
 class MockBrowser:
     def __init__(
         self,
-        search_links: list[dict[str, str]],
-        candidate_responses: list[dict[str, object]],
-        search_body_text: str = "",
+        search_page: dict[str, object] | list[dict[str, str]],
+        candidate_responses: list[dict[str, object]] | None = None,
     ) -> None:
-        self._search_links = search_links
+        self._search_page = search_page
         self._candidate_responses = candidate_responses
-        self._search_body_text = search_body_text
 
     async def new_context(self, **kwargs: object) -> MockContext:
-        return MockContext(self._search_links, self._candidate_responses, self._search_body_text)
+        return MockContext(self._search_page, self._candidate_responses)
 
     async def close(self) -> None:
         pass
@@ -212,34 +230,29 @@ class MockBrowser:
 class MockChromium:
     def __init__(
         self,
-        search_links: list[dict[str, str]],
-        candidate_responses: list[dict[str, object]],
-        search_body_text: str = "",
+        search_page: dict[str, object] | list[dict[str, str]],
+        candidate_responses: list[dict[str, object]] | None = None,
     ) -> None:
-        self._search_links = search_links
+        self._search_page = search_page
         self._candidate_responses = candidate_responses
-        self._search_body_text = search_body_text
 
     async def launch(self, **kwargs: object) -> MockBrowser:
-        return MockBrowser(self._search_links, self._candidate_responses, self._search_body_text)
+        return MockBrowser(self._search_page, self._candidate_responses)
 
 
 class MockPlaywright:
     def __init__(
         self,
-        search_links: list[dict[str, str]],
-        candidate_responses: list[dict[str, object]],
-        search_body_text: str = "",
+        search_page: dict[str, object] | list[dict[str, str]],
+        candidate_responses: list[dict[str, object]] | None = None,
     ) -> None:
-        self.chromium = MockChromium(search_links, candidate_responses, search_body_text)
+        self.chromium = MockChromium(search_page, candidate_responses)
 
     async def __aenter__(self) -> "MockPlaywright":
         return self
 
     async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         pass
-
-
 @pytest.mark.anyio
 async def test_discovery_excludes_candidates_requiring_login(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.discovery import FacebookBrowserDiscovery
@@ -383,41 +396,115 @@ async def test_discovery_raises_unavailable_when_candidate_fails_and_remaining_a
     with pytest.raises(DiscoveryUnavailable):
         await discovery.search("gaming")
 
+@pytest.mark.anyio
+async def test_search_api_returns_503_on_search_page_captcha(monkeypatch: pytest.MonkeyPatch) -> None:
+    search_page = {
+        "links": [{"href": "https://www.facebook.com/watch/?v=701", "text": "Stream"}],
+        "body_text": "Security Check. Please enter the CAPTCHA characters to continue.",
+    }
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, []),
+    )
+
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 503
+    assert "security check" in response.json()["detail"].lower() or "captcha" in response.json()["detail"].lower()
 
 
 @pytest.mark.anyio
-async def test_discovery_raises_unavailable_on_search_page_captcha(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.discovery import FacebookBrowserDiscovery
-    from backend.app.service import DiscoveryUnavailable
+async def test_search_api_returns_503_on_search_page_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    search_page = {
+        "links": [{"href": "https://www.facebook.com/watch/?v=801", "text": "Stream"}],
+        "body_text": "Rate limit exceeded. You're temporarily blocked.",
+    }
 
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, []),
+    )
+
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 503
+    assert "rate limit" in response.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_search_api_returns_503_on_candidate_page_captcha(monkeypatch: pytest.MonkeyPatch) -> None:
     search_links = [
-        {"href": "https://www.facebook.com/watch/?v=701", "text": "Stream"},
+        {"href": "https://www.facebook.com/watch/?v=901", "text": "Captcha Candidate Stream"},
+    ]
+    candidate_responses = [
+        {"body_text": "Security check required. Please enter CAPTCHA to continue."},
     ]
 
     monkeypatch.setattr(
         "playwright.async_api.async_playwright",
-        lambda: MockPlaywright(search_links, [], search_body_text="Security Check. Please enter the CAPTCHA characters to continue."),
+        lambda: MockPlaywright(search_links, candidate_responses),
     )
 
-    discovery = FacebookBrowserDiscovery()
-    with pytest.raises(DiscoveryUnavailable, match="security check"):
-        await discovery.search("gaming")
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 503
+    assert "security check" in response.json()["detail"].lower() or "captcha" in response.json()["detail"].lower()
 
 
 @pytest.mark.anyio
-async def test_discovery_raises_unavailable_on_search_page_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.discovery import FacebookBrowserDiscovery
-    from backend.app.service import DiscoveryUnavailable
-
+async def test_search_api_returns_503_on_candidate_page_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     search_links = [
-        {"href": "https://www.facebook.com/watch/?v=801", "text": "Stream"},
+        {"href": "https://www.facebook.com/watch/?v=902", "text": "Rate Limit Candidate Stream"},
+    ]
+    candidate_responses = [
+        {"body_text": "Rate limit exceeded. Please try again later."},
     ]
 
     monkeypatch.setattr(
         "playwright.async_api.async_playwright",
-        lambda: MockPlaywright(search_links, [], search_body_text="Rate limit exceeded. You're temporarily blocked."),
+        lambda: MockPlaywright(search_links, candidate_responses),
     )
 
-    discovery = FacebookBrowserDiscovery()
-    with pytest.raises(DiscoveryUnavailable, match="rate limit"):
-        await discovery.search("gaming")
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 503
+    assert "rate limit" in response.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_search_api_returns_503_on_search_page_locator_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    search_page = {
+        "links": [{"href": "https://www.facebook.com/watch/?v=903", "text": "Stream"}],
+        "locator_exception": RuntimeError("Page locator detached"),
+    }
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, []),
+    )
+
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 503
+    assert "content is unavailable" in response.json()["detail"].lower() or "unavailable" in response.json()["detail"].lower()

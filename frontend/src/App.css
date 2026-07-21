@@ -497,6 +497,16 @@ kbd {
   background: var(--coral-wash);
 }
 
+.validation-panel {
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.validation-panel .state-icon,
+.validation-icon {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+
 .error-panel .ui-button {
   margin-left: auto;
 }

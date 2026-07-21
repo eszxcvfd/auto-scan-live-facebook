@@ -112,15 +112,15 @@ class FacebookBrowserDiscovery:
 
                 results: list[LivestreamResult] = []
                 verification_errors = 0
-
                 for candidate in candidates[: self.max_candidates]:
                     try:
                         verified = await self._verify_candidate(context, candidate)
                         if verified is not None:
                             results.append(verified)
+                    except DiscoveryUnavailable:
+                        raise
                     except Exception:
                         verification_errors += 1
-
                 await browser.close()
 
                 if not results and verification_errors > 0:
@@ -142,20 +142,7 @@ class FacebookBrowserDiscovery:
             ) from error
 
     async def _extract_candidates(self, page: Page) -> list[dict[str, str]]:
-        try:
-            body_text = " ".join((await page.locator("body").inner_text()).split())
-        except Exception:
-            body_text = ""
-
-        normalized_body = body_text.lower()
-        if any(marker in normalized_body for marker in CAPTCHA_MARKERS):
-            raise DiscoveryUnavailable(
-                "Facebook requested a security check (CAPTCHA). Public discovery is temporarily unavailable."
-            )
-        if any(marker in normalized_body for marker in RATE_LIMIT_MARKERS):
-            raise DiscoveryUnavailable(
-                "Facebook rate limit reached. Public discovery is temporarily unavailable."
-            )
+        await self._inspect_page_body(page, is_candidate=False)
 
         links = await page.locator("a[href]").evaluate_all(
             """
@@ -188,12 +175,7 @@ class FacebookBrowserDiscovery:
         try:
             await page.goto(candidate["url"], wait_until="domcontentloaded", timeout=20_000)
             await page.wait_for_timeout(1_000)
-            body = " ".join((await page.locator("body").inner_text()).split())
-            normalized_body = body.lower()
-            if any(marker in normalized_body for marker in CAPTCHA_MARKERS):
-                raise DiscoveryUnavailable("Facebook candidate page requested a security check (CAPTCHA).")
-            if any(marker in normalized_body for marker in RATE_LIMIT_MARKERS):
-                raise DiscoveryUnavailable("Facebook candidate page rate limit reached.")
+            body = await self._inspect_page_body(page, is_candidate=True)
             if not self._is_live(body):
                 return None
             verified_at = datetime.now(timezone.utc)
@@ -209,6 +191,30 @@ class FacebookBrowserDiscovery:
             )
         finally:
             await page.close()
+
+    async def _inspect_page_body(self, page: Page, *, is_candidate: bool = False) -> str:
+        try:
+            body = " ".join((await page.locator("body").inner_text()).split())
+        except Exception as error:
+            raise DiscoveryUnavailable("Facebook page content is unavailable.") from error
+
+        normalized_body = body.lower()
+        if any(marker in normalized_body for marker in CAPTCHA_MARKERS):
+            msg = (
+                "Facebook candidate page requested a security check (CAPTCHA)."
+                if is_candidate
+                else "Facebook requested a security check (CAPTCHA). Public discovery is temporarily unavailable."
+            )
+            raise DiscoveryUnavailable(msg)
+        if any(marker in normalized_body for marker in RATE_LIMIT_MARKERS):
+            msg = (
+                "Facebook candidate page rate limit reached."
+                if is_candidate
+                else "Facebook rate limit reached. Public discovery is temporarily unavailable."
+            )
+            raise DiscoveryUnavailable(msg)
+
+        return body
 
     @staticmethod
     def _is_live(text: str) -> bool:

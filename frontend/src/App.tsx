@@ -153,6 +153,7 @@ function App() {
                 setQuery(event.target.value)
                 if (state === 'validation_error') {
                   setError('')
+                  setState('idle')
                 }
               }}
               placeholder="What do you want to watch?"
