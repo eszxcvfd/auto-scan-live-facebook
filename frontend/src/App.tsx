@@ -15,12 +15,11 @@ import {
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import { Input } from './components/ui/input'
-import { searchLivestreams } from './lib/api'
+import { searchLivestreams, ApiError } from './lib/api'
 import type { LivestreamResult } from './types'
 import './App.css'
 
-type SearchState = 'idle' | 'loading' | 'success' | 'error'
-
+type SearchState = 'idle' | 'loading' | 'success' | 'validation_error' | 'discovery_error'
 const exampleQueries = ['gaming', 'music', 'news', 'football']
 
 function formatTime(value: string) {
@@ -93,9 +92,12 @@ function App() {
 
   async function handleSearch(value = query) {
     const nextQuery = value.trim()
+    setResults([])
+    setVerifiedAt(null)
+
     if (!nextQuery) {
       setError('Enter a keyword to find public livestreams.')
-      setState('error')
+      setState('validation_error')
       return
     }
 
@@ -109,8 +111,15 @@ function App() {
       setVerifiedAt(response.verified_at)
       setState('success')
     } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : 'The search could not be completed.')
-      setState('error')
+      setResults([])
+      setVerifiedAt(null)
+      const message = searchError instanceof Error ? searchError.message : 'The search could not be completed.'
+      setError(message)
+      if (searchError instanceof ApiError && searchError.status === 422) {
+        setState('validation_error')
+      } else {
+        setState('discovery_error')
+      }
     }
   }
 
@@ -118,9 +127,6 @@ function App() {
     event.preventDefault()
     void handleSearch()
   }
-
-  const hasSearched = state === 'success' || state === 'error'
-
   return (
     <main className="app-shell">
       <nav className="topbar" aria-label="Primary navigation">
@@ -143,7 +149,12 @@ function App() {
             <Search size={20} aria-hidden="true" />
             <Input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                if (state === 'validation_error') {
+                  setError('')
+                }
+              }}
               placeholder="What do you want to watch?"
               aria-label="Search public Facebook livestreams"
               autoComplete="off"
@@ -168,7 +179,7 @@ function App() {
         <div className="results-header">
           <div>
             <p className="section-kicker">Search results</p>
-            <h2>{hasSearched ? `${results.length} live ${results.length === 1 ? 'broadcast' : 'broadcasts'}` : 'Ready when you are'}</h2>
+            <h2>{state === 'success' ? `${results.length} live ${results.length === 1 ? 'broadcast' : 'broadcasts'}` : 'Ready when you are'}</h2>
           </div>
           {verifiedAt && state === 'success' && (
             <div className="verification-note"><CheckCircle2 size={15} /> Checked at {formatTime(verifiedAt)}</div>
@@ -177,14 +188,31 @@ function App() {
 
         {state === 'loading' && <LoadingResults />}
 
-        {state === 'error' && (
+        {state === 'validation_error' && (
+          <div className="state-panel validation-panel" role="alert">
+            <div className="state-icon validation-icon"><TriangleAlert size={22} /></div>
+            <div>
+              <h3>Invalid search query</h3>
+              <p>{error}</p>
+            </div>
+          </div>
+        )}
+
+        {state === 'discovery_error' && (
           <div className="state-panel error-panel" role="alert">
             <div className="state-icon"><TriangleAlert size={22} /></div>
             <div>
-              <h3>Search needs another try</h3>
+              <h3>Public discovery unavailable</h3>
               <p>{error}</p>
             </div>
-            <Button variant="secondary" size="small" onClick={() => void handleSearch()}><RefreshCw size={15} /> Retry</Button>
+            <Button
+              variant="secondary"
+              size="small"
+              onClick={() => void handleSearch(query)}
+              aria-label={`Retry search for ${query}`}
+            >
+              <RefreshCw size={15} /> Retry search
+            </Button>
           </div>
         )}
 

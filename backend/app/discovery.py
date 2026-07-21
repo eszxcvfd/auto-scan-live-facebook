@@ -25,6 +25,23 @@ LOGIN_WALL_MARKERS = (
     "login to continue",
 )
 
+CAPTCHA_MARKERS = (
+    "captcha",
+    "security check",
+    "prove you are human",
+    "enter the characters",
+    "security code",
+)
+
+RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "too many requests",
+    "temporarily blocked",
+    "try again later",
+    "you’re temporarily blocked",
+    "you're temporarily blocked",
+)
+
 REPLAY_MARKERS = (
     "replay",
     "recorded",
@@ -125,6 +142,21 @@ class FacebookBrowserDiscovery:
             ) from error
 
     async def _extract_candidates(self, page: Page) -> list[dict[str, str]]:
+        try:
+            body_text = " ".join((await page.locator("body").inner_text()).split())
+        except Exception:
+            body_text = ""
+
+        normalized_body = body_text.lower()
+        if any(marker in normalized_body for marker in CAPTCHA_MARKERS):
+            raise DiscoveryUnavailable(
+                "Facebook requested a security check (CAPTCHA). Public discovery is temporarily unavailable."
+            )
+        if any(marker in normalized_body for marker in RATE_LIMIT_MARKERS):
+            raise DiscoveryUnavailable(
+                "Facebook rate limit reached. Public discovery is temporarily unavailable."
+            )
+
         links = await page.locator("a[href]").evaluate_all(
             """
             anchors => anchors.map(anchor => ({
@@ -157,6 +189,11 @@ class FacebookBrowserDiscovery:
             await page.goto(candidate["url"], wait_until="domcontentloaded", timeout=20_000)
             await page.wait_for_timeout(1_000)
             body = " ".join((await page.locator("body").inner_text()).split())
+            normalized_body = body.lower()
+            if any(marker in normalized_body for marker in CAPTCHA_MARKERS):
+                raise DiscoveryUnavailable("Facebook candidate page requested a security check (CAPTCHA).")
+            if any(marker in normalized_body for marker in RATE_LIMIT_MARKERS):
+                raise DiscoveryUnavailable("Facebook candidate page rate limit reached.")
             if not self._is_live(body):
                 return None
             verified_at = datetime.now(timezone.utc)

@@ -63,6 +63,25 @@ async def test_search_returns_only_unique_verified_live_broadcasts() -> None:
     assert response.json()["results"][0]["id"] == "live-1"
 
 
+class EmptyDiscovery:
+    async def search(self, query: str) -> list[LivestreamResult]:
+        return []
+
+
+@pytest.mark.anyio
+async def test_search_api_returns_empty_results_on_successful_empty_search() -> None:
+    app = create_app(EmptyDiscovery())
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "gaming"})
+
+    assert response.status_code == 200
+    assert response.json()["query"] == "gaming"
+    assert response.json()["results"] == []
+    assert "verified_at" in response.json()
+
 @pytest.mark.anyio
 async def test_search_rejects_blank_queries() -> None:
     app = create_app(FakeDiscovery())
@@ -141,14 +160,20 @@ class MockPage:
 
 
 class MockContext:
-    def __init__(self, search_links: list[dict[str, str]], candidate_responses: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        search_links: list[dict[str, str]],
+        candidate_responses: list[dict[str, object]],
+        search_body_text: str = "",
+    ) -> None:
         self._search_links = search_links
         self._candidate_responses = candidate_responses
+        self._search_body_text = search_body_text
         self._created_pages: list[MockPage] = []
 
     async def new_page(self) -> MockPage:
         if not self._created_pages:
-            page = MockPage(links=self._search_links)
+            page = MockPage(links=self._search_links, body_text=self._search_body_text)
             self._created_pages.append(page)
             return page
 
@@ -167,29 +192,46 @@ class MockContext:
 
 
 class MockBrowser:
-    def __init__(self, search_links: list[dict[str, str]], candidate_responses: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        search_links: list[dict[str, str]],
+        candidate_responses: list[dict[str, object]],
+        search_body_text: str = "",
+    ) -> None:
         self._search_links = search_links
         self._candidate_responses = candidate_responses
+        self._search_body_text = search_body_text
 
     async def new_context(self, **kwargs: object) -> MockContext:
-        return MockContext(self._search_links, self._candidate_responses)
+        return MockContext(self._search_links, self._candidate_responses, self._search_body_text)
 
     async def close(self) -> None:
         pass
 
 
 class MockChromium:
-    def __init__(self, search_links: list[dict[str, str]], candidate_responses: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        search_links: list[dict[str, str]],
+        candidate_responses: list[dict[str, object]],
+        search_body_text: str = "",
+    ) -> None:
         self._search_links = search_links
         self._candidate_responses = candidate_responses
+        self._search_body_text = search_body_text
 
     async def launch(self, **kwargs: object) -> MockBrowser:
-        return MockBrowser(self._search_links, self._candidate_responses)
+        return MockBrowser(self._search_links, self._candidate_responses, self._search_body_text)
 
 
 class MockPlaywright:
-    def __init__(self, search_links: list[dict[str, str]], candidate_responses: list[dict[str, object]]) -> None:
-        self.chromium = MockChromium(search_links, candidate_responses)
+    def __init__(
+        self,
+        search_links: list[dict[str, str]],
+        candidate_responses: list[dict[str, object]],
+        search_body_text: str = "",
+    ) -> None:
+        self.chromium = MockChromium(search_links, candidate_responses, search_body_text)
 
     async def __aenter__(self) -> "MockPlaywright":
         return self
@@ -339,4 +381,43 @@ async def test_discovery_raises_unavailable_when_candidate_fails_and_remaining_a
 
     discovery = FacebookBrowserDiscovery()
     with pytest.raises(DiscoveryUnavailable):
+        await discovery.search("gaming")
+
+
+
+@pytest.mark.anyio
+async def test_discovery_raises_unavailable_on_search_page_captcha(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+    from backend.app.service import DiscoveryUnavailable
+
+    search_links = [
+        {"href": "https://www.facebook.com/watch/?v=701", "text": "Stream"},
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_links, [], search_body_text="Security Check. Please enter the CAPTCHA characters to continue."),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    with pytest.raises(DiscoveryUnavailable, match="security check"):
+        await discovery.search("gaming")
+
+
+@pytest.mark.anyio
+async def test_discovery_raises_unavailable_on_search_page_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+    from backend.app.service import DiscoveryUnavailable
+
+    search_links = [
+        {"href": "https://www.facebook.com/watch/?v=801", "text": "Stream"},
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_links, [], search_body_text="Rate limit exceeded. You're temporarily blocked."),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    with pytest.raises(DiscoveryUnavailable, match="rate limit"):
         await discovery.search("gaming")

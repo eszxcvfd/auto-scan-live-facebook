@@ -42,7 +42,11 @@ def create_app(discovery: DiscoveryPort | None = None) -> FastAPI:
             discovered = await request.app.state.discovery.search(query)
         except DiscoveryUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Facebook discovery is temporarily unavailable. Check the service and try again.",
+            ) from error
         verified_at = datetime.now(timezone.utc)
         return SearchResponse(
             query=query,
