@@ -154,6 +154,7 @@ class MockPage:
     def __init__(
         self,
         url: str = "",
+        expected_url: str = "",
         links: list[dict[str, str]] | None = None,
         body_text: str = "",
         meta_contents: list[str | None] | None = None,
@@ -161,6 +162,7 @@ class MockPage:
         locator_exception: Exception | None = None,
     ) -> None:
         self.url = url
+        self._expected_url = expected_url
         self._links = links or []
         self._body_text = body_text
         self._meta_contents = list(meta_contents) if meta_contents is not None else []
@@ -177,6 +179,8 @@ class MockPage:
 
     def locator(self, selector: str) -> MockLocator:
         if selector == "a[href]":
+            if self._expected_url and self.url != self._expected_url:
+                return MockLocator(links=[], exception=self._locator_exception)
             return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
             return MockLocator(text=self._body_text, exception=self._locator_exception)
@@ -203,10 +207,12 @@ class MockContext:
     async def new_page(self) -> MockPage:
         if not self._created_pages:
             links = self._search_page.get("links")
+            expected_url = str(self._search_page.get("expected_url", ""))
             body_text = str(self._search_page.get("body_text", ""))
             goto_exc = self._search_page.get("exception")
             loc_exc = self._search_page.get("locator_exception")
             page = MockPage(
+                expected_url=expected_url,
                 links=links if isinstance(links, list) else None,
                 body_text=body_text,
                 goto_exception=goto_exc if isinstance(goto_exc, Exception) else None,
@@ -256,8 +262,6 @@ class MockChromium:
 
     async def launch(self, **kwargs: object) -> MockBrowser:
         return MockBrowser(self._search_page, self._candidate_responses)
-
-
 class MockPlaywright:
     def __init__(
         self,
@@ -708,3 +712,70 @@ async def test_discovery_handles_missing_thumbnail_and_source_name_gracefully(mo
     assert len(results) == 1
     assert results[0].thumbnail_url is None
     assert results[0].source_name == "Facebook public page"
+
+
+@pytest.mark.anyio
+async def test_discovery_uses_watch_live_search_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = {
+        "expected_url": "https://www.facebook.com/watch/live/?q=football",
+        "links": [{"href": "https://www.facebook.com/watch/?v=999", "text": "Football Match"}],
+    }
+    candidate_responses = [{"body_text": "Live now streaming football match"}]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("football")
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.facebook.com/watch/?v=999"
+
+
+@pytest.mark.anyio
+async def test_discovery_accepts_and_normalizes_regional_facebook_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [
+        {"href": "https://en-gb.facebook.com/watch/?v=888", "text": "Regional Broadcast"},
+    ]
+    candidate_responses = [{"body_text": "Live broadcast streaming now"}]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("football")
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.facebook.com/watch/?v=888"
+
+
+@pytest.mark.anyio
+async def test_discovery_excludes_generic_navigation_links_from_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [
+        {"href": "https://www.facebook.com/watch/", "text": "Video Nav"},
+        {"href": "https://www.facebook.com/watch/live/?ref=watch", "text": "Live Nav"},
+        {"href": "https://www.facebook.com/watch/explore/", "text": "Explore Nav"},
+        {"href": "https://www.facebook.com/watch/?v=777", "text": "Real Video"},
+    ]
+    candidate_responses = [{"body_text": "Live stream active now"}]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: MockPlaywright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    results = await discovery.search("football")
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.facebook.com/watch/?v=777"

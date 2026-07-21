@@ -75,8 +75,13 @@ TRACKING_PARAMS = {
 }
 
 LIVE_MARKER = re.compile(r"\blive\b", re.IGNORECASE)
-FACEBOOK_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com"}
 GENERIC_SOURCE_NAMES = {"facebook", "facebook.com", "www.facebook.com", "m.facebook.com"}
+GENERIC_NAV_PATHS = {
+    "/watch", "/watch/", "/watch/live", "/watch/live/",
+    "/watch/shows", "/watch/shows/", "/watch/topic", "/watch/topic/",
+    "/watch/explore", "/watch/explore/", "/watch/search", "/watch/search/",
+    "/search", "/search/", "/search/videos", "/search/videos/", "/search/live", "/search/live/"
+}
 
 
 class FacebookBrowserDiscovery:
@@ -95,7 +100,7 @@ class FacebookBrowserDiscovery:
                 "`uv run playwright install chromium`."
             ) from error
 
-        search_url = f"https://www.facebook.com/search/videos/?q={quote_plus(query)}"
+        search_url = f"https://www.facebook.com/watch/live/?q={quote_plus(query)}"
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(
@@ -156,9 +161,17 @@ class FacebookBrowserDiscovery:
         candidates: list[dict[str, str]] = []
         seen: set[str] = set()
         for link in links:
+            text = str(link.get("text", "")).strip()
+            if text.lower() in ("link to profile", "profile", "view profile"):
+                continue
             raw_url = str(link.get("href", "")).split("#", 1)[0]
             parsed = urlparse(raw_url)
-            if parsed.netloc not in FACEBOOK_HOSTS:
+            if not self._is_facebook_host(parsed.netloc):
+                continue
+            path = parsed.path.rstrip("/")
+            if not path or (path in {p.rstrip("/") for p in GENERIC_NAV_PATHS} and "v=" not in parsed.query):
+                continue
+            if path.startswith(("/watch/explore/", "/watch/search/", "/search/")):
                 continue
             if not any(segment in parsed.path for segment in ("/watch", "/videos", "/live")):
                 continue
@@ -166,7 +179,7 @@ class FacebookBrowserDiscovery:
             if canonical_url in seen:
                 continue
             seen.add(canonical_url)
-            candidates.append({"url": canonical_url, "text": str(link.get("text", "")).strip()})
+            candidates.append({"url": canonical_url, "text": text})
         return candidates
 
     async def _verify_candidate(
@@ -259,7 +272,7 @@ class FacebookBrowserDiscovery:
     @staticmethod
     def _canonical_url(url: str) -> str:
         parsed = urlparse(url)
-        netloc = "www.facebook.com" if parsed.netloc in FACEBOOK_HOSTS else parsed.netloc
+        netloc = "www.facebook.com" if FacebookBrowserDiscovery._is_facebook_host(parsed.netloc) else parsed.netloc
 
         if parsed.query:
             query_pairs = parse_qs(parsed.query, keep_blank_values=True)
@@ -281,3 +294,8 @@ class FacebookBrowserDiscovery:
     def _stable_id(url: str) -> str:
         canonical = FacebookBrowserDiscovery._canonical_url(url)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _is_facebook_host(host: str) -> bool:
+        h = host.lower()
+        return h == "facebook.com" or h.endswith(".facebook.com")
