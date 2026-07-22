@@ -557,6 +557,35 @@
 .error-panel .ui-button {
   margin-left: auto;
 }
+.show-more-container {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.show-more-container .ui-button {
+  min-width: 140px;
+}
+
+.exhaustion-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+  padding: 14px 20px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: rgba(24, 26, 29, 0.4);
+  color: var(--ink-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.append-error-panel {
+  margin-top: 16px;
+  min-height: auto;
+  padding: 16px 20px;
+}
 
 .welcome-panel {
   position: relative;

@@ -178,3 +178,210 @@ describe('App accessible operator workflow', () => {
     expect(searchSpy).toHaveBeenCalledTimes(2)
   })
 })
+describe('App pagination and continuation workflow', () => {
+  function createMockResult(id: string, title = `Stream ${id}`) {
+    return {
+      id,
+      title,
+      source_name: `Channel ${id}`,
+      url: `https://www.facebook.com/watch/?v=${id}`,
+      thumbnail_url: null,
+      started_at: '2026-07-22T10:00:00Z',
+      verified_at: '2026-07-22T10:00:00Z',
+      is_live: true,
+      is_replay: false,
+    }
+  }
+
+  it('renders Show More button when initial batch has more results', async () => {
+    vi.spyOn(api, 'searchLivestreams').mockResolvedValueOnce({
+      query: 'news',
+      verified_at: '2026-07-22T10:00:00Z',
+      results: Array.from({ length: 10 }, (_, i) => createMockResult(`news-${i + 1}`)),
+      has_more: true,
+      next_cursor: 'token-page-2',
+    })
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'news' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    await screen.findByRole('heading', { name: /10 live broadcasts/i })
+
+    const showMoreBtn = screen.getByRole('button', { name: /show more live results for news/i })
+    expect(showMoreBtn).toBeDefined()
+  })
+
+  it('appends continuation batch to existing results when Show More is clicked', async () => {
+    const searchSpy = vi
+      .spyOn(api, 'searchLivestreams')
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:00:00Z',
+        results: Array.from({ length: 10 }, (_, i) => createMockResult(`news-${i + 1}`)),
+        has_more: true,
+        next_cursor: 'token-page-2',
+      })
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:05:00Z',
+        results: Array.from({ length: 5 }, (_, i) => createMockResult(`news-${i + 11}`)),
+        has_more: false,
+        next_cursor: null,
+      })
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'news' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    const showMoreBtn = await screen.findByRole('button', { name: /show more live results for news/i })
+    fireEvent.click(showMoreBtn)
+
+    expect(searchSpy).toHaveBeenLastCalledWith('news', 'token-page-2')
+
+    await screen.findByRole('heading', { name: /15 live broadcasts/i })
+    expect(screen.getByText('Stream news-1')).toBeDefined()
+    expect(screen.getByText('Stream news-15')).toBeDefined()
+  })
+
+  it('prevents concurrent Show More requests while continuation loading is pending', async () => {
+    let resolveContinuation: (value: SearchResponse) => void = () => {}
+    const pendingContinuation = new Promise<SearchResponse>((resolve) => {
+      resolveContinuation = resolve
+    })
+
+    const searchSpy = vi
+      .spyOn(api, 'searchLivestreams')
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:00:00Z',
+        results: Array.from({ length: 10 }, (_, i) => createMockResult(`news-${i + 1}`)),
+        has_more: true,
+        next_cursor: 'token-page-2',
+      })
+      .mockReturnValueOnce(pendingContinuation)
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'news' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    const showMoreBtn = await screen.findByRole('button', { name: /show more live results for news/i })
+    fireEvent.click(showMoreBtn)
+
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+
+    // Click again while continuation is pending
+    fireEvent.click(showMoreBtn)
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+
+    resolveContinuation({
+      query: 'news',
+      verified_at: '2026-07-22T10:05:00Z',
+      results: Array.from({ length: 3 }, (_, i) => createMockResult(`news-${i + 11}`)),
+      has_more: false,
+      next_cursor: null,
+    })
+
+    await screen.findByRole('heading', { name: /13 live broadcasts/i })
+  })
+
+  it('deduplicates duplicate result IDs returned in continuation batch', async () => {
+    vi.spyOn(api, 'searchLivestreams')
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:00:00Z',
+        results: [createMockResult('news-1'), createMockResult('news-2')],
+        has_more: true,
+        next_cursor: 'token-page-2',
+      })
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:05:00Z',
+        results: [createMockResult('news-2'), createMockResult('news-3')],
+        has_more: false,
+        next_cursor: null,
+      })
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'news' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    const showMoreBtn = await screen.findByRole('button', { name: /show more live results for news/i })
+    fireEvent.click(showMoreBtn)
+
+    await screen.findByRole('heading', { name: /3 live broadcasts/i })
+    const news2Elements = screen.getAllByText('Stream news-2')
+    expect(news2Elements).toHaveLength(1)
+  })
+
+  it('renders exhaustion indicator when discovery surface is exhausted (has_more is false)', async () => {
+    vi.spyOn(api, 'searchLivestreams')
+      .mockResolvedValueOnce({
+        query: 'niche topic',
+        verified_at: '2026-07-22T10:00:00Z',
+        results: [createMockResult('niche-1')],
+        has_more: false,
+        next_cursor: null,
+      })
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'niche topic' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    await screen.findByRole('heading', { name: /1 live broadcast/i })
+
+    expect(screen.queryByRole('button', { name: /show more/i })).toBeNull()
+    expect(screen.getByText(/no more live results found for “niche topic”/i)).toBeDefined()
+  })
+
+  it('preserves existing results and shows error notice when continuation request fails', async () => {
+    const searchSpy = vi
+      .spyOn(api, 'searchLivestreams')
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:00:00Z',
+        results: Array.from({ length: 10 }, (_, i) => createMockResult(`news-${i + 1}`)),
+        has_more: true,
+        next_cursor: 'token-page-2',
+      })
+      .mockRejectedValueOnce(new api.ApiError('Public discovery service is offline.', 503))
+      .mockResolvedValueOnce({
+        query: 'news',
+        verified_at: '2026-07-22T10:05:00Z',
+        results: Array.from({ length: 2 }, (_, i) => createMockResult(`news-${i + 11}`)),
+        has_more: false,
+        next_cursor: null,
+      })
+
+    render(<App />)
+
+    const input = screen.getByRole('textbox', { name: /search public facebook livestreams/i })
+    fireEvent.change(input, { target: { value: 'news' } })
+    fireEvent.click(screen.getByRole('button', { name: /search live/i }))
+
+    const showMoreBtn = await screen.findByRole('button', { name: /show more live results for news/i })
+    fireEvent.click(showMoreBtn)
+
+    // Existing 10 results remain visible
+    await screen.findByText('Public discovery service is offline.')
+    expect(screen.getByRole('heading', { name: /10 live broadcasts/i })).toBeDefined()
+    expect(screen.getByText('Stream news-1')).toBeDefined()
+
+    // Retry loading more
+    const retryAppendBtn = screen.getByRole('button', { name: /retry loading more/i })
+    fireEvent.click(retryAppendBtn)
+
+    await screen.findByRole('heading', { name: /12 live broadcasts/i })
+    expect(searchSpy).toHaveBeenCalledTimes(3)
+  })
+})

@@ -12,13 +12,16 @@ export class ApiError extends Error {
   }
 }
 
-export async function searchLivestreams(query: string): Promise<SearchResponse> {
+export async function searchLivestreams(
+  query: string,
+  cursor?: string | null
+): Promise<SearchResponse> {
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, cursor: cursor ?? null }),
     })
   } catch {
     throw new ApiError('Public discovery service is offline or unreachable. Check your server connection.', 503)

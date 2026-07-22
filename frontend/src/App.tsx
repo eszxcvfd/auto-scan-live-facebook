@@ -19,7 +19,7 @@ import { searchLivestreams, ApiError } from './lib/api'
 import type { LivestreamResult } from './types'
 import './App.css'
 
-type SearchState = 'idle' | 'loading' | 'success' | 'validation_error' | 'discovery_error'
+type SearchState = 'idle' | 'loading' | 'loading_more' | 'success' | 'validation_error' | 'discovery_error'
 const exampleQueries = ['gaming', 'music', 'news', 'football']
 
 function formatTime(value: string) {
@@ -86,16 +86,23 @@ function LoadingResults() {
 
 function App() {
   const [query, setQuery] = useState('')
+  const [activeQuery, setActiveQuery] = useState('')
   const [results, setResults] = useState<LivestreamResult[]>([])
   const [verifiedAt, setVerifiedAt] = useState<string | null>(null)
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
   const [state, setState] = useState<SearchState>('idle')
   const [error, setError] = useState('')
+  const [appendError, setAppendError] = useState('')
 
   async function handleSearch(value = query) {
-    if (state === 'loading') return
+    if (state === 'loading' || state === 'loading_more') return
     const nextQuery = value.trim()
     setResults([])
     setVerifiedAt(null)
+    setNextCursor(null)
+    setHasMore(false)
+    setAppendError('')
 
     if (!nextQuery) {
       setError('Enter a keyword to find public livestreams.')
@@ -104,6 +111,7 @@ function App() {
     }
 
     setQuery(nextQuery)
+    setActiveQuery(nextQuery)
     setState('loading')
     setError('')
 
@@ -111,10 +119,14 @@ function App() {
       const response = await searchLivestreams(nextQuery)
       setResults(response.results)
       setVerifiedAt(response.verified_at)
+      setHasMore(Boolean(response.has_more))
+      setNextCursor(response.next_cursor ?? null)
       setState('success')
     } catch (searchError) {
       setResults([])
       setVerifiedAt(null)
+      setNextCursor(null)
+      setHasMore(false)
       const message = searchError instanceof Error ? searchError.message : 'The search could not be completed.'
       setError(message)
       if (searchError instanceof ApiError && searchError.status === 422) {
@@ -125,9 +137,30 @@ function App() {
     }
   }
 
+  async function handleShowMore() {
+    if (state === 'loading' || state === 'loading_more' || !hasMore || !nextCursor) return
+    setState('loading_more')
+    setAppendError('')
+
+    try {
+      const response = await searchLivestreams(activeQuery || query, nextCursor)
+      const existingIds = new Set(results.map((r) => r.id))
+      const newItems = response.results.filter((r) => !existingIds.has(r.id))
+      setResults((prev) => [...prev, ...newItems])
+      setVerifiedAt(response.verified_at)
+      setHasMore(Boolean(response.has_more))
+      setNextCursor(response.next_cursor ?? null)
+      setState('success')
+    } catch (searchError) {
+      setState('success')
+      const message = searchError instanceof Error ? searchError.message : 'The search could not be completed.'
+      setAppendError(message)
+    }
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (state === 'loading') return
+    if (state === 'loading' || state === 'loading_more') return
     void handleSearch()
   }
   return (
@@ -166,7 +199,7 @@ function App() {
               autoComplete="off"
             />
           </div>
-          <Button type="submit" disabled={state === 'loading'}>
+          <Button type="submit" disabled={state === 'loading' || state === 'loading_more'}>
             {state === 'loading' ? <RefreshCw className="spin" size={17} aria-hidden="true" /> : <Search size={17} aria-hidden="true" />}
             {state === 'loading' ? 'Searching' : 'Search live'}
           </Button>
@@ -184,9 +217,9 @@ function App() {
         <div className="results-header">
           <div>
             <p className="section-kicker">Search results</p>
-            <h2>{state === 'success' ? `${results.length} live ${results.length === 1 ? 'broadcast' : 'broadcasts'}` : 'Ready when you are'}</h2>
+            <h2>{results.length > 0 ? `${results.length} live ${results.length === 1 ? 'broadcast' : 'broadcasts'}` : 'Ready when you are'}</h2>
           </div>
-          {verifiedAt && state === 'success' && (
+          {verifiedAt && (state === 'success' || state === 'loading_more') && (
             <div className="verification-note"><CheckCircle2 size={15} aria-hidden="true" /> Checked at {formatTime(verifiedAt)}</div>
           )}
         </div>
@@ -231,10 +264,54 @@ function App() {
           </div>
         )}
 
-        {state === 'success' && results.length > 0 && (
-          <div className="result-list">
-            {results.map((result) => <ResultRow key={result.id} result={result} />)}
-          </div>
+        {results.length > 0 && (
+          <>
+            <div className="result-list">
+              {results.map((result) => <ResultRow key={result.id} result={result} />)}
+            </div>
+
+            {appendError && (
+              <div className="state-panel error-panel append-error-panel" role="alert">
+                <div className="state-icon"><TriangleAlert size={20} aria-hidden="true" /></div>
+                <div>
+                  <h3>Could not load more results</h3>
+                  <p>{appendError}</p>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={() => void handleShowMore()}
+                  aria-label={`Retry loading more live results for ${activeQuery || query}`}
+                >
+                  <RefreshCw size={15} aria-hidden="true" /> Retry loading more
+                </Button>
+              </div>
+            )}
+
+            {!appendError && hasMore && (
+              <div className="show-more-container">
+                <Button
+                  variant="secondary"
+                  onClick={() => void handleShowMore()}
+                  disabled={state === 'loading_more' || state === 'loading'}
+                  aria-label={`Show more live results for ${activeQuery || query}`}
+                >
+                  {state === 'loading_more' ? (
+                    <RefreshCw className="spin" size={17} aria-hidden="true" />
+                  ) : (
+                    <Search size={17} aria-hidden="true" />
+                  )}
+                  {state === 'loading_more' ? 'Loading more...' : 'Show more'}
+                </Button>
+              </div>
+            )}
+
+            {!appendError && !hasMore && (
+              <div className="exhaustion-note" role="status">
+                No more live results found for “{activeQuery || query}”
+              </div>
+            )}
+          </>
         )}
 
         {state === 'idle' && (
