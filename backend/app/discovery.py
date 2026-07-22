@@ -87,8 +87,8 @@ GENERIC_NAV_PATHS = {
 class FacebookBrowserDiscovery:
     """Discover and verify public Facebook broadcasts without automated login."""
 
-    def __init__(self, max_candidates: int = 20) -> None:
-        self.max_candidates = max_candidates
+    def __init__(self, page_size: int = 10, max_candidates: int | None = None) -> None:
+        self.page_size = max_candidates if max_candidates is not None else page_size
 
     async def fetch_candidates(
         self, query: str, cursor: str | None = None
@@ -129,8 +129,7 @@ class FacebookBrowserDiscovery:
                     except ValueError:
                         offset = 0
 
-                page_size = 10
-                end_offset = offset + page_size
+                end_offset = offset + self.page_size
                 sliced = candidates[offset:end_offset]
                 if end_offset < len(candidates):
                     next_surface_cursor = f"surface:{end_offset}"

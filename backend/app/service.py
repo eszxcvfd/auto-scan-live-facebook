@@ -23,7 +23,6 @@ class DiscoveryPort(Protocol):
 
 GENERIC_STOPWORDS = {"live", "stream", "facebook", "video", "online", "channel", "page"}
 TARGET_BATCH_SIZE = 10
-MAX_CANDIDATES_PER_REQUEST = 40
 
 
 def normalize_query(query: str) -> str:
@@ -96,16 +95,14 @@ async def collect_verified_batch(
     accumulated_results: list[LivestreamResult] = []
     candidates_inspected = 0
     current_surface_cursor = surface_cursor
-    surface_exhausted = False
     verification_errors = 0
-    while len(accumulated_results) < TARGET_BATCH_SIZE and candidates_inspected < MAX_CANDIDATES_PER_REQUEST:
+
+    while len(accumulated_results) < TARGET_BATCH_SIZE:
         candidates, next_surface_cursor = await discovery.fetch_candidates(query, current_surface_cursor)
         if not candidates:
-            if next_surface_cursor is None:
-                surface_exhausted = True
-            else:
-                current_surface_cursor = next_surface_cursor
+            current_surface_cursor = None
             break
+
         relevant_candidates = filter_relevant_candidates(query, candidates)
 
         for candidate in relevant_candidates:
@@ -127,8 +124,7 @@ async def collect_verified_batch(
                 break
 
         current_surface_cursor = next_surface_cursor
-        if next_surface_cursor is None:
-            surface_exhausted = True
+        if current_surface_cursor is None:
             break
 
     if not accumulated_results and verification_errors > 0 and candidates_inspected > 0:
@@ -136,6 +132,6 @@ async def collect_verified_batch(
             "Facebook discovery is temporarily unavailable. Candidate verification failed."
         )
 
-    has_more = not surface_exhausted
+    has_more = (len(accumulated_results) == TARGET_BATCH_SIZE) and (current_surface_cursor is not None)
     next_cursor_token = encode_cursor_token(current_surface_cursor, seen_ids) if has_more else None
     return accumulated_results, next_cursor_token, has_more

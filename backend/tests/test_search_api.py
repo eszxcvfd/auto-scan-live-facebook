@@ -1067,7 +1067,7 @@ async def test_search_api_contract_early_relevance_filtering_skips_unnecessary_v
 
 
 @pytest.mark.anyio
-async def test_search_api_contract_partial_batch_with_has_more_true_when_surface_not_exhausted() -> None:
+async def test_search_api_contract_partial_batch_returns_has_more_false_and_null_cursor() -> None:
     candidates = [
         CandidateBroadcast(
             id=f"news-{i}",
@@ -1077,7 +1077,7 @@ async def test_search_api_contract_partial_batch_with_has_more_true_when_surface
         )
         for i in range(1, 7)
     ]
-    adapter = FakePaginatedDiscoveryAdapter(candidates, next_surface_cursor="surface:40")
+    adapter = FakePaginatedDiscoveryAdapter(candidates, next_surface_cursor=None)
     app = create_app(adapter)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1086,8 +1086,8 @@ async def test_search_api_contract_partial_batch_with_has_more_true_when_surface
     assert response.status_code == 200
     data = response.json()
     assert len(data["results"]) == 6
-    assert data["has_more"] is True
-    assert data["next_cursor"] is not None
+    assert data["has_more"] is False
+    assert data["next_cursor"] is None
 
 
 @pytest.mark.anyio
@@ -1112,3 +1112,70 @@ async def test_search_api_contract_surface_exhaustion_returns_has_more_false() -
     assert len(data["results"]) == 4
     assert data["has_more"] is False
     assert data["next_cursor"] is None
+@pytest.mark.anyio
+async def test_search_api_contract_multi_page_candidate_gathering_completes_initial_batch() -> None:
+    candidates = [
+        CandidateBroadcast(
+            id=f"news-{i}",
+            title=f"Global News Stream {i}",
+            source_name="News Channel",
+            url=f"https://www.facebook.com/watch/?v=news-{i}",
+        )
+        for i in range(1, 26)
+    ]
+
+    class MultiPageAdapter(FakePaginatedDiscoveryAdapter):
+        async def verify_live_status(
+            self, candidate: CandidateBroadcast
+        ) -> LivestreamResult | None:
+            self.verified_calls.append(candidate.id)
+            verified_at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+            cid_num = int(candidate.id.split("-")[1])
+            if (4 <= cid_num <= 10) or (18 <= cid_num <= 20):
+                return LivestreamResult(
+                    id=candidate.id,
+                    title=candidate.title,
+                    source_name=candidate.source_name,
+                    url=candidate.url,
+                    thumbnail_url=None,
+                    started_at=None,
+                    verified_at=verified_at,
+                    is_live=False,
+                    is_replay=True,
+                )
+            return LivestreamResult(
+                id=candidate.id,
+                title=candidate.title,
+                source_name=candidate.source_name,
+                url=candidate.url,
+                thumbnail_url=candidate.thumbnail_url,
+                started_at=None,
+                verified_at=verified_at,
+                is_live=True,
+                is_replay=False,
+            )
+
+    adapter = MultiPageAdapter(candidates, next_surface_cursor="surface:25")
+    app = create_app(adapter)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp1 = await client.post("/api/search", json={"query": "news"})
+        data1 = resp1.json()
+
+        assert resp1.status_code == 200
+        assert len(data1["results"]) == 10
+        assert data1["has_more"] is True
+        assert data1["next_cursor"] is not None
+
+        resp2 = await client.post("/api/search", json={"query": "news", "cursor": data1["next_cursor"]})
+        data2 = resp2.json()
+
+        assert resp2.status_code == 200
+        assert len(data2["results"]) == 5
+        assert data2["has_more"] is False
+        assert data2["next_cursor"] is None
+
+        ids1 = {r["id"] for r in data1["results"]}
+        ids2 = {r["id"] for r in data2["results"]}
+        assert len(ids1 | ids2) == 15
+        assert ids1.isdisjoint(ids2)
