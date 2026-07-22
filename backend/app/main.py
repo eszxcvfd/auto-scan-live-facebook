@@ -8,8 +8,8 @@ from .models import SearchRequest, SearchResponse
 from .service import (
     DiscoveryPort,
     DiscoveryUnavailable,
+    collect_verified_batch,
     normalize_query,
-    verified_live_results,
 )
 
 
@@ -39,7 +39,9 @@ def create_app(discovery: DiscoveryPort | None = None) -> FastAPI:
             )
 
         try:
-            discovered = await request.app.state.discovery.search(query)
+            results, next_cursor, has_more = await collect_verified_batch(
+                request.app.state.discovery, query, payload.cursor
+            )
         except DiscoveryUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except Exception as error:
@@ -51,7 +53,9 @@ def create_app(discovery: DiscoveryPort | None = None) -> FastAPI:
         return SearchResponse(
             query=query,
             verified_at=verified_at,
-            results=verified_live_results(discovered),
+            results=results,
+            has_more=has_more,
+            next_cursor=next_cursor,
         )
 
     return app

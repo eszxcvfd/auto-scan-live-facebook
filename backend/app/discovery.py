@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
-from .models import LivestreamResult
+from .models import CandidateBroadcast, LivestreamResult
 from .service import DiscoveryUnavailable
 
 if TYPE_CHECKING:
@@ -90,7 +90,9 @@ class FacebookBrowserDiscovery:
     def __init__(self, max_candidates: int = 20) -> None:
         self.max_candidates = max_candidates
 
-    async def search(self, query: str) -> list[LivestreamResult]:
+    async def fetch_candidates(
+        self, query: str, cursor: str | None = None
+    ) -> tuple[list[CandidateBroadcast], str | None]:
         try:
             from playwright.async_api import TimeoutError as PlaywrightTimeoutError
             from playwright.async_api import async_playwright
@@ -115,26 +117,21 @@ class FacebookBrowserDiscovery:
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_500)
                 candidates = await self._extract_candidates(page)
-
-                results: list[LivestreamResult] = []
-                verification_errors = 0
-                for candidate in candidates[: self.max_candidates]:
-                    try:
-                        verified = await self._verify_candidate(context, candidate)
-                        if verified is not None:
-                            results.append(verified)
-                    except DiscoveryUnavailable:
-                        raise
-                    except Exception:
-                        verification_errors += 1
                 await browser.close()
 
-                if not results and verification_errors > 0:
-                    raise DiscoveryUnavailable(
-                        "Facebook discovery is temporarily unavailable. Candidate verification failed."
-                    )
+                offset = 0
+                if cursor:
+                    try:
+                        if cursor.startswith("surface:"):
+                            offset = int(cursor.split(":", 1)[1])
+                        else:
+                            offset = int(cursor)
+                    except ValueError:
+                        offset = 0
 
-                return results
+                sliced = candidates[offset:]
+                next_surface_cursor = None
+                return sliced, next_surface_cursor
         except PlaywrightTimeoutError as error:
             raise DiscoveryUnavailable(
                 "Facebook did not respond before the search timed out. Try again."
@@ -147,7 +144,61 @@ class FacebookBrowserDiscovery:
                 "installation and try again."
             ) from error
 
-    async def _extract_candidates(self, page: Page) -> list[dict[str, str]]:
+    async def verify_live_status(
+        self, candidate: CandidateBroadcast
+    ) -> LivestreamResult | None:
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.async_api import async_playwright
+        except ImportError as error:
+            raise DiscoveryUnavailable(
+                "Playwright is not installed. Run `uv sync --extra dev` and "
+                "`uv run playwright install chromium`."
+            ) from error
+
+        try:
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(
+                    headless=os.getenv("FACEBOOK_HEADLESS", "true").lower() != "false"
+                )
+                context = await browser.new_context(
+                    locale="en-US",
+                    timezone_id="UTC",
+                    viewport={"width": 1440, "height": 1000},
+                )
+                page = await context.new_page()
+                try:
+                    await page.goto(candidate.url, wait_until="domcontentloaded", timeout=20_000)
+                    await page.wait_for_timeout(1_000)
+                    body = await self._inspect_page_body(page, is_candidate=True)
+                    if not self._is_live(body):
+                        return None
+                    verified_at = datetime.now(timezone.utc)
+                    url = candidate.url
+                    thumbnail_url = await self._extract_thumbnail_url(page)
+                    source_name = await self._extract_source_name(page) or candidate.source_name
+                    return LivestreamResult(
+                        id=candidate.id,
+                        title=candidate.title,
+                        source_name=source_name,
+                        url=url,
+                        thumbnail_url=thumbnail_url,
+                        verified_at=verified_at,
+                        is_live=True,
+                        is_replay=False,
+                    )
+                finally:
+                    await page.close()
+                    await browser.close()
+        except DiscoveryUnavailable:
+            raise
+
+    async def search(self, query: str) -> list[LivestreamResult]:
+        from .service import collect_verified_batch
+        results, _, _ = await collect_verified_batch(self, query)
+        return results
+
+    async def _extract_candidates(self, page: Page) -> list[CandidateBroadcast]:
         await self._inspect_page_body(page, is_candidate=False)
 
         links = await page.locator("a[href]").evaluate_all(
@@ -158,7 +209,7 @@ class FacebookBrowserDiscovery:
             }))
             """
         )
-        candidates: list[dict[str, str]] = []
+        candidates: list[CandidateBroadcast] = []
         seen: set[str] = set()
         for link in links:
             text = str(link.get("text", "")).strip()
@@ -179,35 +230,17 @@ class FacebookBrowserDiscovery:
             if canonical_url in seen:
                 continue
             seen.add(canonical_url)
-            candidates.append({"url": canonical_url, "text": text})
-        return candidates
-
-    async def _verify_candidate(
-        self, context: BrowserContext, candidate: dict[str, str]
-    ) -> LivestreamResult | None:
-        page = await context.new_page()
-        try:
-            await page.goto(candidate["url"], wait_until="domcontentloaded", timeout=20_000)
-            await page.wait_for_timeout(1_000)
-            body = await self._inspect_page_body(page, is_candidate=True)
-            if not self._is_live(body):
-                return None
-            verified_at = datetime.now(timezone.utc)
-            url = candidate["url"]
-            thumbnail_url = await self._extract_thumbnail_url(page)
-            source_name = await self._extract_source_name(page) or "Facebook public page"
-            return LivestreamResult(
-                id=self._stable_id(url),
-                title=candidate["text"] or "Live broadcast",
-                source_name=source_name,
-                url=url,
-                thumbnail_url=thumbnail_url,
-                verified_at=verified_at,
-                is_live=True,
-                is_replay=False,
+            cid = self._stable_id(canonical_url)
+            candidates.append(
+                CandidateBroadcast(
+                    id=cid,
+                    title=text or "Live broadcast",
+                    source_name="Facebook public page",
+                    url=canonical_url,
+                    thumbnail_url=None,
+                )
             )
-        finally:
-            await page.close()
+        return candidates
     async def _get_meta_content(self, page: Page, selector: str) -> str | None:
         try:
             content = await page.locator(selector).first.get_attribute("content", timeout=2_000)

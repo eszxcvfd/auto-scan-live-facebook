@@ -39,3 +39,18 @@ _Avoid_: Viewer, administrator
 **Live verification**:
 The act of checking whether a discovered broadcast is actively transmitting at a specific search moment before presenting it as a discovery result.
 _Avoid_: Assumed live status, historical live status
+**Relevant live broadcast**:
+A live broadcast whose title or source metadata matches the search query keywords. Irrelevant broadcasts found on the discovery surface are excluded before being presented to the operator.
+_Avoid_: Off-topic recommendation, unverified topic match
+
+**Discovery batch**:
+A set of verified live broadcasts (up to a target batch size of 10) returned to the operator in a single search or continuation step.
+_Avoid_: Full Facebook result set, arbitrary result stream
+
+**Discovery exhaustion**:
+The state reached when no additional relevant, verified live broadcasts can be found on public discovery surfaces for a search query.
+_Avoid_: End of Facebook, zero search coverage
+
+**Continuation**:
+The action of requesting the next batch of relevant verified live broadcasts for an existing search query.
+_Avoid_: Re-search, query reset
