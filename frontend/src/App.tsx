@@ -49,8 +49,8 @@ function ResultRow({ result }: { result: LivestreamResult }) {
         </div>
         <p className="result-source">{result.source_name}</p>
         <div className="result-meta">
-          <span><ShieldCheck size={14} /> Checked at {formatTime(result.verified_at)}</span>
-          <span><Clock3 size={14} /> Public discovery</span>
+          <span><ShieldCheck size={14} aria-hidden="true" /> Checked at {formatTime(result.verified_at)}</span>
+          <span><Clock3 size={14} aria-hidden="true" /> Public discovery</span>
         </div>
       </div>
       <a
@@ -61,7 +61,7 @@ function ResultRow({ result }: { result: LivestreamResult }) {
         aria-label={`Open ${result.title} on Facebook`}
       >
         <span>Open on Facebook</span>
-        <ExternalLink size={16} />
+        <ExternalLink size={16} aria-hidden="true" />
       </a>
     </article>
   )
@@ -92,6 +92,7 @@ function App() {
   const [error, setError] = useState('')
 
   async function handleSearch(value = query) {
+    if (state === 'loading') return
     const nextQuery = value.trim()
     setResults([])
     setVerifiedAt(null)
@@ -126,20 +127,21 @@ function App() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (state === 'loading') return
     void handleSearch()
   }
   return (
     <main className="app-shell">
       <nav className="topbar" aria-label="Primary navigation">
         <a className="brand" href="/" aria-label="LiveScout home">
-          <span className="brand-mark"><Radio size={17} /></span>
+          <span className="brand-mark"><Radio size={17} aria-hidden="true" /></span>
           <span>LiveScout</span>
         </a>
-        <div className="topbar-status"><span /> Public discovery</div>
+        <div className="topbar-status"><span aria-hidden="true" /> Public discovery</div>
       </nav>
 
       <section className="hero-section">
-        <div className="eyebrow"><span className="eyebrow-dot" /> Facebook live discovery</div>
+        <div className="eyebrow"><span className="eyebrow-dot" aria-hidden="true" /> Facebook live discovery</div>
         <h1>Find what&apos;s live<br /><em>right now.</em></h1>
         <p className="hero-copy">
           Search public Facebook broadcasts by keyword. Every result is checked at search time, so replays stay out of your way.
@@ -159,12 +161,13 @@ function App() {
               }}
               placeholder="What do you want to watch?"
               aria-label="Search public Facebook livestreams"
+              aria-invalid={state === 'validation_error' ? 'true' : 'false'}
+              aria-describedby={state === 'validation_error' ? 'validation-error-desc' : undefined}
               autoComplete="off"
             />
-            <kbd>⌘ K</kbd>
           </div>
           <Button type="submit" disabled={state === 'loading'}>
-            {state === 'loading' ? <RefreshCw className="spin" size={17} /> : <Search size={17} />}
+            {state === 'loading' ? <RefreshCw className="spin" size={17} aria-hidden="true" /> : <Search size={17} aria-hidden="true" />}
             {state === 'loading' ? 'Searching' : 'Search live'}
           </Button>
         </form>
@@ -184,7 +187,7 @@ function App() {
             <h2>{state === 'success' ? `${results.length} live ${results.length === 1 ? 'broadcast' : 'broadcasts'}` : 'Ready when you are'}</h2>
           </div>
           {verifiedAt && state === 'success' && (
-            <div className="verification-note"><CheckCircle2 size={15} /> Checked at {formatTime(verifiedAt)}</div>
+            <div className="verification-note"><CheckCircle2 size={15} aria-hidden="true" /> Checked at {formatTime(verifiedAt)}</div>
           )}
         </div>
 
@@ -192,17 +195,17 @@ function App() {
 
         {state === 'validation_error' && (
           <div className="state-panel validation-panel" role="alert">
-            <div className="state-icon validation-icon"><TriangleAlert size={22} /></div>
+            <div className="state-icon validation-icon"><TriangleAlert size={22} aria-hidden="true" /></div>
             <div>
               <h3>Invalid search query</h3>
-              <p>{error}</p>
+              <p id="validation-error-desc">{error}</p>
             </div>
           </div>
         )}
 
         {state === 'discovery_error' && (
           <div className="state-panel error-panel" role="alert">
-            <div className="state-icon"><TriangleAlert size={22} /></div>
+            <div className="state-icon"><TriangleAlert size={22} aria-hidden="true" /></div>
             <div>
               <h3>Public discovery unavailable</h3>
               <p>{error}</p>
@@ -213,14 +216,14 @@ function App() {
               onClick={() => void handleSearch(query)}
               aria-label={`Retry search for ${query}`}
             >
-              <RefreshCw size={15} /> Retry search
+              <RefreshCw size={15} aria-hidden="true" /> Retry search
             </Button>
           </div>
         )}
 
         {state === 'success' && results.length === 0 && (
           <div className="state-panel empty-panel">
-            <div className="state-icon"><Sparkles size={22} /></div>
+            <div className="state-icon"><Sparkles size={22} aria-hidden="true" /></div>
             <div>
               <h3>Nothing live for “{query}”</h3>
               <p>Try a broader keyword. We only show broadcasts verified as live right now.</p>
@@ -236,20 +239,20 @@ function App() {
 
         {state === 'idle' && (
           <div className="welcome-panel">
-            <div className="welcome-orbit"><span className="orbit-dot one" /><span className="orbit-dot two" /><Radio size={29} /></div>
+            <div className="welcome-orbit"><span className="orbit-dot one" aria-hidden="true" /><span className="orbit-dot two" aria-hidden="true" /><Radio size={29} aria-hidden="true" /></div>
             <div>
               <h3>Live, not later</h3>
               <p>Enter a topic and we&apos;ll verify public results before they reach your list.</p>
             </div>
-            <ArrowUpRight className="welcome-arrow" size={20} />
+            <ArrowUpRight className="welcome-arrow" size={20} aria-hidden="true" />
           </div>
         )}
       </section>
 
       <footer className="footer">
-        <span><ShieldCheck size={14} /> Public pages only</span>
+        <span><ShieldCheck size={14} aria-hidden="true" /> Public pages only</span>
         <span>Coverage is best-effort</span>
-        <span>Results open on Facebook <ExternalLink size={13} /></span>
+        <span>Results open on Facebook <ExternalLink size={13} aria-hidden="true" /></span>
       </footer>
     </main>
   )
