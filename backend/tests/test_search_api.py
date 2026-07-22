@@ -1275,3 +1275,105 @@ async def test_search_api_contract_multi_page_candidate_gathering_completes_init
         ids2 = {r["id"] for r in data2["results"]}
         assert len(ids1 | ids2) == 15
         assert ids1.isdisjoint(ids2)
+
+@pytest.mark.anyio
+async def test_search_api_preserves_candidate_with_generic_search_anchor_text_when_metadata_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+    search_page = {
+        "links": [
+            {
+                "href": "https://www.facebook.com/watch/?v=1001",
+                "text": "🔴SOLO NUKE CHALLENGE | WZ PASSION SESSION | LOCK IN",
+            },
+            {
+                "href": "https://www.facebook.com/watch/?v=1002",
+                "text": "ZLaner",
+            },
+        ],
+        "body_text": "LIVE Facebook Watch",
+    }
+    candidate_responses = [
+        {
+            "body_text": "LIVE Premier League Football Match",
+            "meta_contents": [None, "Sky Sports Football", "Premier League Live Football"],
+        },
+        {
+            "body_text": "LIVE Warzone Gaming",
+            "meta_contents": ["Warzone Live", "ZLaner"],
+        },
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        make_mock_playwright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    app = create_app(discovery)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "football"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["results"]) == 1
+    assert data["results"][0]["url"] == "https://www.facebook.com/watch/?v=1001"
+    assert data["results"][0]["source_name"] == "Sky Sports Football"
+@pytest.mark.anyio
+async def test_search_api_returns_503_on_search_page_unclassified_login_prompt_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = {
+        "links": [],
+        "body_text": "Log in or sign up for Facebook to see more. LIVE streams.",
+    }
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        make_mock_playwright(search_page, []),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    app = create_app(discovery)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/search", json={"query": "football"})
+
+    assert "login" in response.json()["detail"].lower() or "unavailable" in response.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_extract_title_rejects_all_generic_fallback_titles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    discovery = FacebookBrowserDiscovery()
+    generic_titles_to_test = [
+        "Facebook Live",
+        "Video",
+        "Channel",
+        "Page",
+        "Facebook Watch",
+        "Live Broadcast",
+        "Live Stream",
+    ]
+    for generic_title in generic_titles_to_test:
+        mock_page = MockPage(
+            search_page={"links": [], "body_text": ""},
+            candidate_responses=[],
+            candidate_counter=[0],
+        )
+        mock_page._meta_contents = [generic_title]
+        extracted = await discovery._extract_title(mock_page)
+        assert extracted is None, (
+            f"_extract_title should reject generic fallback title '{generic_title}', but got '{extracted}'"
+        )

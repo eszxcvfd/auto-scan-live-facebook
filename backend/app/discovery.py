@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
 from .models import CandidateBroadcast, LivestreamResult
-from .service import DiscoveryUnavailable
+from .service import GENERIC_FALLBACK_TITLES, DiscoveryUnavailable
+
 
 if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Page
@@ -23,6 +24,12 @@ LOGIN_WALL_MARKERS = (
     "login to see",
     "log in to continue",
     "login to continue",
+    "log in or sign up",
+    "login or sign up",
+    "log in or create an account",
+    "login or create an account",
+    "see more from",
+    "see more videos from",
 )
 
 CAPTCHA_MARKERS = (
@@ -197,9 +204,10 @@ class FacebookBrowserDiscovery:
                     url = candidate.url
                     thumbnail_url = await self._extract_thumbnail_url(page)
                     source_name = await self._extract_source_name(page) or candidate.source_name
+                    title = await self._extract_title(page) or candidate.title
                     return LivestreamResult(
                         id=candidate.id,
-                        title=candidate.title,
+                        title=title,
                         source_name=source_name,
                         url=url,
                         thumbnail_url=thumbnail_url,
@@ -289,6 +297,28 @@ class FacebookBrowserDiscovery:
                 return name
         return None
 
+    async def _extract_title(self, page: Page) -> str | None:
+        for selector in (
+            'meta[property="og:title"]',
+            'meta[name="twitter:title"]',
+        ):
+            title = await self._get_meta_content(page, selector)
+            if title and title.strip():
+                clean_title = title.strip()
+                norm_title = clean_title.lower()
+                if norm_title not in GENERIC_SOURCE_NAMES and norm_title not in GENERIC_FALLBACK_TITLES:
+                    return clean_title
+        try:
+            title = await page.title()
+            if title and title.strip():
+                clean_title = title.strip()
+                norm_title = clean_title.lower()
+                if norm_title not in GENERIC_SOURCE_NAMES and norm_title not in GENERIC_FALLBACK_TITLES:
+                    return clean_title
+        except Exception:
+            pass
+        return None
+
     async def _inspect_page_body(self, page: Page, *, is_candidate: bool = False) -> str:
         try:
             body = " ".join((await page.locator("body").inner_text()).split())
@@ -310,6 +340,10 @@ class FacebookBrowserDiscovery:
                 else "Facebook rate limit reached. Public discovery is temporarily unavailable."
             )
             raise DiscoveryUnavailable(msg)
+        if not is_candidate and any(marker in normalized_body for marker in LOGIN_WALL_MARKERS):
+            raise DiscoveryUnavailable(
+                "Facebook public discovery surface is login-gated. Public discovery is temporarily unavailable."
+            )
 
         return body
 

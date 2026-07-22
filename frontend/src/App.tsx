@@ -44,7 +44,7 @@ function ResultRow({ result }: { result: LivestreamResult }) {
       </div>
       <div className="result-copy">
         <div className="result-heading">
-          <h3>{result.title}</h3>
+          <h3 title={result.title}>{result.title}</h3>
           <Badge>Verified live</Badge>
         </div>
         <p className="result-source">{result.source_name}</p>

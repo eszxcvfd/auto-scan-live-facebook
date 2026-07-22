@@ -426,20 +426,27 @@
 
 .result-heading {
   display: flex;
+  min-width: 0;
   align-items: center;
   flex-wrap: wrap;
   gap: 9px;
 }
 
 .result-heading h3 {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   margin: 0;
   color: var(--ink);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .ui-badge {

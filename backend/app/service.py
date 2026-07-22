@@ -44,10 +44,29 @@ def extract_search_keywords(query: str) -> set[str]:
     return filtered if filtered else tokens
 
 
-def is_relevant_candidate(query_keywords: set[str], candidate: CandidateBroadcast) -> bool:
-    """Evaluate candidate relevance against title and source_name using word-boundary / substring matching."""
-    title_norm = candidate.title.lower()
+GENERIC_FALLBACK_TITLES = {
+    "facebook",
+    "facebook watch",
+    "facebook live",
+    "live broadcast",
+    "live stream",
+    "video",
+    "channel",
+    "page",
+}
+
+
+def is_generic_candidate(candidate: CandidateBroadcast) -> bool:
+    """Determine if a candidate broadcast has generic / incomplete search-page metadata."""
     source_norm = candidate.source_name.lower().strip()
+    title_norm = candidate.title.lower().strip()
+    return (source_norm in GENERIC_FALLBACK_SOURCE_NAMES) or (not title_norm or title_norm in GENERIC_FALLBACK_TITLES)
+
+
+def is_relevant_item(query_keywords: set[str], item: CandidateBroadcast | LivestreamResult) -> bool:
+    """Evaluate item relevance against title and source_name using word-boundary / substring matching."""
+    title_norm = item.title.lower()
+    source_norm = item.source_name.lower().strip()
     check_source = source_norm not in GENERIC_FALLBACK_SOURCE_NAMES
     for kw in query_keywords:
         if kw in title_norm:
@@ -56,12 +75,12 @@ def is_relevant_candidate(query_keywords: set[str], candidate: CandidateBroadcas
             return True
     return False
 
+is_relevant_candidate = is_relevant_item
 
 def filter_relevant_candidates(query: str, candidates: Iterable[CandidateBroadcast]) -> list[CandidateBroadcast]:
     """Filter candidate broadcasts to only those matching query keywords."""
     keywords = extract_search_keywords(query)
     return [c for c in candidates if is_relevant_candidate(keywords, c)]
-
 
 def encode_cursor_token(surface_cursor: str | None, seen_ids: set[str] | list[str]) -> str:
     data = {
@@ -107,24 +126,28 @@ async def collect_verified_batch(
     current_surface_cursor = surface_cursor
     verification_errors = 0
 
+    keywords = extract_search_keywords(query)
     while len(accumulated_results) < TARGET_BATCH_SIZE:
         candidates, next_surface_cursor = await discovery.fetch_candidates(query, current_surface_cursor)
         if not candidates:
             current_surface_cursor = None
             break
 
-        relevant_candidates = filter_relevant_candidates(query, candidates)
-
-        for candidate in relevant_candidates:
-            candidates_inspected += 1
+        for candidate in candidates:
             if candidate.id in seen_ids:
                 continue
+
+            if not is_generic_candidate(candidate) and not is_relevant_candidate(keywords, candidate):
+                continue
+
+            candidates_inspected += 1
 
             try:
                 verified = await discovery.verify_live_status(candidate)
                 if verified is not None and verified.is_live and not verified.is_replay:
-                    accumulated_results.append(verified)
-                    seen_ids.add(verified.id)
+                    if is_relevant_item(keywords, verified):
+                        accumulated_results.append(verified)
+                        seen_ids.add(verified.id)
             except DiscoveryUnavailable:
                 raise
             except Exception:

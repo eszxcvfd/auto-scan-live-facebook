@@ -45,6 +45,8 @@ describe('App result handoff', () => {
     expect(link.getAttribute('target')).toBe('_blank')
     expect(link.getAttribute('rel')).toContain('noreferrer')
     expect(link.getAttribute('aria-label')).toBe('Open Official Gaming Championship on Facebook')
+    const heading = screen.getByRole('heading', { name: 'Official Gaming Championship' })
+    expect(heading.getAttribute('title')).toBe('Official Gaming Championship')
   })
 })
 describe('App accessible operator workflow', () => {
