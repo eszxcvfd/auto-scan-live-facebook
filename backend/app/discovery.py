@@ -129,8 +129,13 @@ class FacebookBrowserDiscovery:
                     except ValueError:
                         offset = 0
 
-                sliced = candidates[offset:]
-                next_surface_cursor = None
+                page_size = 10
+                end_offset = offset + page_size
+                sliced = candidates[offset:end_offset]
+                if end_offset < len(candidates):
+                    next_surface_cursor = f"surface:{end_offset}"
+                else:
+                    next_surface_cursor = None
                 return sliced, next_surface_cursor
         except PlaywrightTimeoutError as error:
             raise DiscoveryUnavailable(

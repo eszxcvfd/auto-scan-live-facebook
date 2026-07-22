@@ -180,34 +180,56 @@ class MockLocator:
 class MockPage:
     def __init__(
         self,
-        url: str = "",
-        expected_url: str = "",
-        links: list[dict[str, str]] | None = None,
-        body_text: str = "",
-        meta_contents: list[str | None] | None = None,
-        goto_exception: Exception | None = None,
-        locator_exception: Exception | None = None,
+        search_page: dict[str, object],
+        candidate_responses: list[dict[str, object]],
+        candidate_counter: list[int],
     ) -> None:
-        self.url = url
-        self._expected_url = expected_url
-        self._links = links or []
-        self._body_text = body_text
-        self._meta_contents = list(meta_contents) if meta_contents is not None else []
-        self._goto_exception = goto_exception
-        self._locator_exception = locator_exception
+        self.url = ""
+        self._search_page = search_page
+        self._candidate_responses = candidate_responses
+        self._candidate_counter = candidate_counter
+        self._links: list[dict[str, str]] = []
+        self._body_text = ""
+        self._meta_contents: list[str | None] = []
+        self._locator_exception: Exception | None = None
 
     async def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None) -> None:
-        if self._goto_exception:
-            raise self._goto_exception
         self.url = url
+
+        if "/watch/live/" in url or "/watch/live?" in url:
+            exp_url = str(self._search_page.get("expected_url", ""))
+            if exp_url and url != exp_url:
+                self._links = []
+                self._body_text = ""
+                loc_exc = self._search_page.get("locator_exception")
+                self._locator_exception = loc_exc if isinstance(loc_exc, Exception) else None
+                return
+            links = self._search_page.get("links")
+            self._links = links if isinstance(links, list) else []
+            self._body_text = str(self._search_page.get("body_text", ""))
+            goto_exc = self._search_page.get("exception")
+            if isinstance(goto_exc, Exception):
+                raise goto_exc
+            loc_exc = self._search_page.get("locator_exception")
+            self._locator_exception = loc_exc if isinstance(loc_exc, Exception) else None
+        else:
+            idx = self._candidate_counter[0]
+            self._candidate_counter[0] += 1
+            resp = self._candidate_responses[idx] if idx < len(self._candidate_responses) else {}
+            goto_exc = resp.get("exception")
+            if isinstance(goto_exc, Exception):
+                raise goto_exc
+            loc_exc = resp.get("locator_exception")
+            self._locator_exception = loc_exc if isinstance(loc_exc, Exception) else None
+            self._body_text = str(resp.get("body_text", ""))
+            meta = resp.get("meta_contents")
+            self._meta_contents = list(meta) if isinstance(meta, list) else []
 
     async def wait_for_timeout(self, timeout: int) -> None:
         pass
 
     def locator(self, selector: str) -> MockLocator:
         if selector == "a[href]":
-            if self._expected_url and self.url != self._expected_url:
-                return MockLocator(links=[], exception=self._locator_exception)
             return MockLocator(links=self._links, exception=self._locator_exception)
         elif selector == "body":
             return MockLocator(text=self._body_text, exception=self._locator_exception)
@@ -223,43 +245,17 @@ class MockContext:
         self,
         search_page: dict[str, object] | list[dict[str, str]],
         candidate_responses: list[dict[str, object]] | None = None,
-        page_counter: list[int] | None = None,
+        candidate_counter: list[int] | None = None,
     ) -> None:
         if isinstance(search_page, list):
             self._search_page: dict[str, object] = {"links": search_page}
         else:
             self._search_page = search_page or {}
         self._candidate_responses = candidate_responses or []
-        self._page_counter = page_counter if page_counter is not None else [0]
+        self._candidate_counter = candidate_counter if candidate_counter is not None else [0]
 
     async def new_page(self) -> MockPage:
-        current_idx = self._page_counter[0]
-        self._page_counter[0] += 1
-
-        if current_idx == 0:
-            links = self._search_page.get("links")
-            expected_url = str(self._search_page.get("expected_url", ""))
-            body_text = str(self._search_page.get("body_text", ""))
-            goto_exc = self._search_page.get("exception")
-            loc_exc = self._search_page.get("locator_exception")
-            return MockPage(
-                expected_url=expected_url,
-                links=links if isinstance(links, list) else None,
-                body_text=body_text,
-                goto_exception=goto_exc if isinstance(goto_exc, Exception) else None,
-                locator_exception=loc_exc if isinstance(loc_exc, Exception) else None,
-            )
-
-        resp_idx = current_idx - 1
-        resp = self._candidate_responses[resp_idx] if resp_idx < len(self._candidate_responses) else {}
-        meta_contents = resp.get("meta_contents")
-
-        return MockPage(
-            body_text=str(resp.get("body_text", "")),
-            meta_contents=meta_contents if isinstance(meta_contents, list) else None,
-            goto_exception=resp.get("exception") if isinstance(resp.get("exception"), Exception) else None,
-            locator_exception=resp.get("locator_exception") if isinstance(resp.get("locator_exception"), Exception) else None,
-        )
+        return MockPage(self._search_page, self._candidate_responses, self._candidate_counter)
 
 
 class MockBrowser:
@@ -267,14 +263,14 @@ class MockBrowser:
         self,
         search_page: dict[str, object] | list[dict[str, str]],
         candidate_responses: list[dict[str, object]] | None = None,
-        page_counter: list[int] | None = None,
+        candidate_counter: list[int] | None = None,
     ) -> None:
         self._search_page = search_page
         self._candidate_responses = candidate_responses
-        self._page_counter = page_counter
+        self._candidate_counter = candidate_counter
 
     async def new_context(self, **kwargs: object) -> MockContext:
-        return MockContext(self._search_page, self._candidate_responses, self._page_counter)
+        return MockContext(self._search_page, self._candidate_responses, self._candidate_counter)
 
     async def close(self) -> None:
         pass
@@ -288,10 +284,10 @@ class MockChromium:
     ) -> None:
         self._search_page = search_page
         self._candidate_responses = candidate_responses
-        self._page_counter: list[int] = [0]
+        self._candidate_counter: list[int] = [0]
 
     async def launch(self, **kwargs: object) -> MockBrowser:
-        return MockBrowser(self._search_page, self._candidate_responses, self._page_counter)
+        return MockBrowser(self._search_page, self._candidate_responses, self._candidate_counter)
 class MockPlaywright:
     def __init__(
         self,
@@ -839,6 +835,52 @@ async def test_discovery_excludes_generic_navigation_links_from_candidates(monke
 
     assert len(results) == 1
     assert results[0].url == "https://www.facebook.com/watch/?v=777"
+@pytest.mark.anyio
+async def test_discovery_pagination_preserves_unconsumed_candidates_across_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = [
+        {"href": f"https://www.facebook.com/watch/?v={i}", "text": f"Gaming Stream {i}"}
+        for i in range(1, 16)
+    ]
+    candidate_responses = [
+        {"body_text": f"Live broadcast streaming now live gaming {i}"}
+        for i in range(1, 16)
+    ]
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        make_mock_playwright(search_page, candidate_responses),
+    )
+
+    discovery = FacebookBrowserDiscovery()
+    app = create_app(discovery)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp1 = await client.post("/api/search", json={"query": "gaming"})
+        assert resp1.status_code == 200
+        data1 = resp1.json()
+        assert len(data1["results"]) == 10
+        assert data1["has_more"] is True
+        assert data1["next_cursor"] is not None
+
+        resp2 = await client.post(
+            "/api/search", json={"query": "gaming", "cursor": data1["next_cursor"]}
+        )
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        assert len(data2["results"]) == 5
+        assert data2["has_more"] is False
+        assert data2["next_cursor"] is None
+
+        ids1 = {r["id"] for r in data1["results"]}
+        ids2 = {r["id"] for r in data2["results"]}
+        assert len(ids1 | ids2) == 15
+        assert ids1.isdisjoint(ids2)
 def test_extract_search_keywords_normalizes_and_filters_stopwords() -> None:
     from backend.app.service import extract_search_keywords
 
