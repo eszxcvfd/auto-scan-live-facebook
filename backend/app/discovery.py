@@ -112,7 +112,7 @@ class FacebookBrowserDiscovery:
             except ValueError:
                 offset = 0
 
-        target_count = offset + self.page_size
+        target_count = offset + self.page_size + 1
         search_url = f"https://www.facebook.com/watch/live/?q={quote_plus(query)}"
         try:
             async with async_playwright() as playwright:

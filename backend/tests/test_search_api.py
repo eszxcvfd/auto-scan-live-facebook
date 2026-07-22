@@ -985,6 +985,35 @@ async def test_discovery_scrolls_to_load_deeper_candidates_for_continuation_batc
     assert len(candidates) == 10
     assert candidates[0].url == "https://www.facebook.com/watch/?v=105"
     assert candidates[-1].url == "https://www.facebook.com/watch/?v=1014"
+@pytest.mark.anyio
+async def test_discovery_fetch_candidates_scrolls_when_initial_candidates_equals_page_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = {
+        "links": [
+            {"href": f"https://www.facebook.com/watch/?v=10{i}", "text": f"Gaming Stream {i}"}
+            for i in range(10)
+        ],
+        "scroll_links": [
+            [
+                {"href": f"https://www.facebook.com/watch/?v=10{i}", "text": f"Gaming Stream {i}"}
+                for i in range(10, 15)
+            ]
+        ],
+    }
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        make_mock_playwright(search_page),
+    )
+
+    discovery = FacebookBrowserDiscovery(page_size=10)
+    candidates, next_cursor = await discovery.fetch_candidates("gaming", cursor=None)
+
+    assert len(candidates) == 10
+    assert next_cursor == "surface:10"
 def test_encode_and_decode_cursor_token_roundtrips() -> None:
     from backend.app.service import decode_cursor_token, encode_cursor_token
 
