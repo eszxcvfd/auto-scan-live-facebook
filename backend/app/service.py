@@ -22,6 +22,13 @@ class DiscoveryPort(Protocol):
 
 
 GENERIC_STOPWORDS = {"live", "stream", "facebook", "video", "online", "channel", "page"}
+GENERIC_FALLBACK_SOURCE_NAMES = {
+    "facebook public page",
+    "facebook",
+    "facebook.com",
+    "www.facebook.com",
+    "m.facebook.com",
+}
 TARGET_BATCH_SIZE = 10
 
 
@@ -40,9 +47,12 @@ def extract_search_keywords(query: str) -> set[str]:
 def is_relevant_candidate(query_keywords: set[str], candidate: CandidateBroadcast) -> bool:
     """Evaluate candidate relevance against title and source_name using word-boundary / substring matching."""
     title_norm = candidate.title.lower()
-    source_norm = candidate.source_name.lower()
+    source_norm = candidate.source_name.lower().strip()
+    check_source = source_norm not in GENERIC_FALLBACK_SOURCE_NAMES
     for kw in query_keywords:
-        if kw in title_norm or kw in source_norm:
+        if kw in title_norm:
+            return True
+        if check_source and kw in source_norm:
             return True
     return False
 
@@ -68,9 +78,9 @@ def decode_cursor_token(cursor: str | None) -> tuple[str | None, set[str]]:
     try:
         decoded_bytes = base64.urlsafe_b64decode(cursor.encode("utf-8"))
         data = json.loads(decoded_bytes.decode("utf-8"))
-        offset = data.get("offset")
+        surface_cursor = data.get("offset")
         seen_ids = set(data.get("seen_ids", []))
-        return offset, seen_ids
+        return surface_cursor, seen_ids
     except Exception:
         return None, set()
 

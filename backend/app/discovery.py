@@ -102,6 +102,17 @@ class FacebookBrowserDiscovery:
                 "`uv run playwright install chromium`."
             ) from error
 
+        offset = 0
+        if cursor:
+            try:
+                if cursor.startswith("surface:"):
+                    offset = int(cursor.split(":", 1)[1])
+                else:
+                    offset = int(cursor)
+            except ValueError:
+                offset = 0
+
+        target_count = offset + self.page_size
         search_url = f"https://www.facebook.com/watch/live/?q={quote_plus(query)}"
         try:
             async with async_playwright() as playwright:
@@ -117,17 +128,22 @@ class FacebookBrowserDiscovery:
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_500)
                 candidates = await self._extract_candidates(page)
-                await browser.close()
 
-                offset = 0
-                if cursor:
+                max_scrolls = 5
+                scroll_count = 0
+                while len(candidates) < target_count and scroll_count < max_scrolls:
+                    scroll_count += 1
                     try:
-                        if cursor.startswith("surface:"):
-                            offset = int(cursor.split(":", 1)[1])
-                        else:
-                            offset = int(cursor)
-                    except ValueError:
-                        offset = 0
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    except Exception:
+                        break
+                    await page.wait_for_timeout(1_000)
+                    new_candidates = await self._extract_candidates(page)
+                    if len(new_candidates) <= len(candidates):
+                        break
+                    candidates = new_candidates
+
+                await browser.close()
 
                 end_offset = offset + self.page_size
                 sliced = candidates[offset:end_offset]

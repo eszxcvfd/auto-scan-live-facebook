@@ -228,6 +228,14 @@ class MockPage:
     async def wait_for_timeout(self, timeout: int) -> None:
         pass
 
+    async def evaluate(self, expression: str, *args: object) -> object:
+        if isinstance(self._search_page, dict):
+            scroll_links = self._search_page.get("scroll_links")
+            if isinstance(scroll_links, list) and scroll_links:
+                next_batch = scroll_links.pop(0) if isinstance(scroll_links[0], list) else scroll_links
+                if isinstance(next_batch, list):
+                    self._links.extend(next_batch)
+        return None
     def locator(self, selector: str) -> MockLocator:
         if selector == "a[href]":
             return MockLocator(links=self._links, exception=self._locator_exception)
@@ -918,6 +926,65 @@ def test_filter_relevant_candidates_matches_title_and_source_name() -> None:
     assert [c.id for c in filtered] == ["1", "3"]
 
 
+def test_filter_relevant_candidates_excludes_generic_fallback_source_name() -> None:
+    from backend.app.models import CandidateBroadcast
+    from backend.app.service import filter_relevant_candidates
+
+    candidates = [
+        CandidateBroadcast(
+            id="1",
+            title="Minecraft Gaming Stream",
+            source_name="Facebook public page",
+            url="https://www.facebook.com/watch/?v=1",
+        ),
+        CandidateBroadcast(
+            id="2",
+            title="Official Page Stream",
+            source_name="Facebook public page",
+            url="https://www.facebook.com/watch/?v=2",
+        ),
+        CandidateBroadcast(
+            id="3",
+            title="Tech Discussion",
+            source_name="Community Page",
+            url="https://www.facebook.com/watch/?v=3",
+        ),
+    ]
+
+    filtered = filter_relevant_candidates("page", candidates)
+    assert [c.id for c in filtered] == ["2", "3"]
+
+
+@pytest.mark.anyio
+async def test_discovery_scrolls_to_load_deeper_candidates_for_continuation_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.discovery import FacebookBrowserDiscovery
+
+    search_page = {
+        "links": [
+            {"href": f"https://www.facebook.com/watch/?v=10{i}", "text": f"Gaming Stream {i}"}
+            for i in range(5)
+        ],
+        "scroll_links": [
+            [
+                {"href": f"https://www.facebook.com/watch/?v=10{i}", "text": f"Gaming Stream {i}"}
+                for i in range(5, 15)
+            ]
+        ],
+    }
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        make_mock_playwright(search_page),
+    )
+
+    discovery = FacebookBrowserDiscovery(page_size=10)
+    candidates, next_cursor = await discovery.fetch_candidates("gaming", cursor="surface:5")
+
+    assert len(candidates) == 10
+    assert candidates[0].url == "https://www.facebook.com/watch/?v=105"
+    assert candidates[-1].url == "https://www.facebook.com/watch/?v=1014"
 def test_encode_and_decode_cursor_token_roundtrips() -> None:
     from backend.app.service import decode_cursor_token, encode_cursor_token
 
